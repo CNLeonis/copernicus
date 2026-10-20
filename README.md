@@ -53,6 +53,26 @@ git push -u origin feature/backend-evaluation
 
 Następnie otwórz pull request do `main`. Przed scaleniem sprawdź wynik GitHub Actions i aktualizuj branch o zmiany z `main`. Zmiany w plikach wspólnych opisuj w PR, aby druga osoba mogła dostosować swoją część. Małe commity związane z jednym zadaniem ułatwiają przegląd i rozwiązywanie konfliktów.
 
+### Skrót do codziennej pracy
+
+W katalogu głównym repozytorium uruchom skrypt przez `node` (nie wymaga modułów npm):
+
+| Rola | Pobierz najnowszy `main` na własną gałąź | Zapisz i wyślij własne zmiany |
+| --- | --- | --- |
+| Backend | `node scripts/team-git.mjs sync backend` | `node scripts/team-git.mjs publish backend` |
+| Frontend | `node scripts/team-git.mjs sync frontend` | `node scripts/team-git.mjs publish frontend` |
+
+`publish` pyta o wiadomość commita; można ją też podać przez `-m "opis"`.
+Backend może dołączyć zmianę `docs/api.md` po uzgodnieniu kontraktu, dodając
+`--include-api-doc`. Skrypt działa tylko na gałęzi przypisanej do roli, blokuje
+commit przy zmianach poza jej katalogiem i nigdy nie wypycha zmian do `main`.
+Jeśli nie ma nowych zmian, `publish` po prostu wysyła istniejące commity.
+
+`sync` wymaga czystego katalogu roboczego. Pobiera aktualny stan z GitHub,
+scala `origin/main` z lokalną gałęzią i niczego nie wypycha. Przy konflikcie
+zatrzymuje się, aby można go było rozwiązać ręcznie; po rozwiązaniu uruchom
+`publish`. Skrypt nie tworzy gałęzi i nie zastępuje przeglądu PR.
+
 ## Praca bez Compose
 
 Backend: w `backend/` zainstaluj `requirements.txt` w środowisku wirtualnym i uruchom `uvicorn app.main:app --reload`. Frontend: w `frontend/` wykonaj `npm ci`, potem `npm run dev`. Gdy Vite działa poza Dockerem, domyślnie kieruje `/api` do `http://localhost:8000`.
