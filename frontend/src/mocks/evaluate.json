@@ -1,0 +1,30 @@
+{
+  "mode": "demo",
+  "overall": {
+    "score": null,
+    "assessment": null,
+    "reason": null
+  },
+  "categories": {
+    "grocery": {
+      "score": null,
+      "assessment": null,
+      "reason": null
+    },
+    "transit": {
+      "score": null,
+      "assessment": null,
+      "reason": null
+    },
+    "park": {
+      "score": null,
+      "assessment": null,
+      "reason": null
+    },
+    "school": {
+      "score": null,
+      "assessment": null,
+      "reason": null
+    }
+  }
+}
