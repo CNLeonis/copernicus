@@ -22,26 +22,33 @@ Przy pierwszym starcie Compose pobiera obrazy bazowe oraz instaluje zależności
 
 | Obszar | Główne pliki | Odpowiedzialność |
 | --- | --- | --- |
-| Backend | `backend/` | Endpointy, logika, zależności Pythona |
-| Frontend | `frontend/` | Widoki, komponenty, zależności npm |
-| Wspólne | `compose.yaml`, `docs/api.md`, `README.md`, `.github/` | Integracja i kontrakt API; zmiany uzgadniane w PR |
+| Backend | `backend/`, `docs/api.md` | Endpointy, dane OSM, obliczenia, model i kontrakt API |
+| Frontend | `frontend/` | Mapa, geolokalizacja, widoki i lokalna odpowiedź demonstracyjna |
+| Wspólne | `compose.yaml`, `README.md`, `.github/` | Integracja; zmiany uzgadniane w PR |
 
 Frontend wywołuje ścieżki `/api/...`. Vite przekazuje je do backendu wewnątrz sieci Compose, dlatego w kodzie przeglądarki wystarczy `fetch('/api/...')`. Ustalenia dotyczące odpowiedzi API zapisujemy w [docs/api.md](docs/api.md). Backend może dodawać endpointy niezależnie; frontend może równolegle rozwijać widoki na podstawie uzgodnionego kontraktu.
 
+Pierwszy wspólny etap ustala format `POST /api/evaluate`. Lokalny przykład
+odpowiedzi jest w `frontend/src/mocks/evaluate.json`; endpoint oceny nie jest
+jeszcze zaimplementowany. Frontend może budować ekran na tym pliku, a backend
+wdrażać ten sam format. Dalsze zmiany kontraktu wymagają uzgodnienia przed
+użyciem nowych pól przez frontend. Wyniki z `mode: "demo"` należy oznaczać
+jako demonstracyjne.
+
 ## Branche i commity
 
-Każda osoba pracuje w osobnym klonie repozytorium albo osobnym `git worktree` (samo przełączanie branchy w jednym katalogu nie daje równoległej pracy). Nie commitujemy bezpośrednio do `main`.
+Po wspólnym commicie startowym każda osoba pracuje w osobnym klonie repozytorium albo osobnym `git worktree` (samo przełączanie branchy w jednym katalogu nie daje równoległej pracy). Gałęzie to `feature/frontend-map` i `feature/backend-evaluation`. Nie commitujemy bezpośrednio do `main`.
 
-Przykład dla backendu; osoba od frontendu używa analogicznie nazwy `feat/frontend-...`:
+Przykład dla backendu; osoba od frontendu używa gałęzi `feature/frontend-map` i zmienia tylko `frontend/`:
 
 ```sh
 git switch main
 git pull --ff-only origin main
-git switch -c feat/backend-api
+git switch -c feature/backend-evaluation
 # edycja plików w backend/ i, jeśli trzeba, docs/api.md
 git add backend docs/api.md
 git commit -m "feat(backend): add API endpoint"
-git push -u origin feat/backend-api
+git push -u origin feature/backend-evaluation
 ```
 
 Następnie otwórz pull request do `main`. Przed scaleniem sprawdź wynik GitHub Actions i aktualizuj branch o zmiany z `main`. Zmiany w plikach wspólnych opisuj w PR, aby druga osoba mogła dostosować swoją część. Małe commity związane z jednym zadaniem ułatwiają przegląd i rozwiązywanie konfliktów.
