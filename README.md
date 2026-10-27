@@ -28,12 +28,36 @@ Przy pierwszym starcie Compose pobiera obrazy bazowe oraz instaluje zależności
 
 Frontend wywołuje ścieżki `/api/...`. Vite przekazuje je do backendu wewnątrz sieci Compose, dlatego w kodzie przeglądarki wystarczy `fetch('/api/...')`. Ustalenia dotyczące odpowiedzi API zapisujemy w [docs/api.md](docs/api.md). Backend może dodawać endpointy niezależnie; frontend może równolegle rozwijać widoki na podstawie uzgodnionego kontraktu.
 
-Pierwszy wspólny etap ustala format `POST /api/evaluate`. Lokalny przykład
-odpowiedzi jest w `frontend/src/mocks/evaluate.json`; endpoint oceny nie jest
-jeszcze zaimplementowany. Frontend może budować ekran na tym pliku, a backend
-wdrażać ten sam format. Dalsze zmiany kontraktu wymagają uzgodnienia przed
-użyciem nowych pól przez frontend. Wyniki z `mode: "demo"` należy oznaczać
-jako demonstracyjne.
+Analiza punktu korzysta z kontraktu `POST /api/analyze-location` (zastąpił
+roboczy `POST /api/evaluate`). Dopóki endpoint nie jest zaimplementowany,
+frontend używa mocka oznaczonego `mode: "demo"`. Dalsze zmiany kontraktu
+wymagają uzgodnienia przed użyciem nowych pól przez frontend. Architekturę i
+świadome odstępstwa od specyfikacji opisuje [docs/architecture.md](docs/architecture.md).
+
+## Baza danych i testy lokalne
+
+`docker compose up -d db` uruchamia PostGIS. Schemat tworzy
+`docker compose exec backend python -m pipeline.migrate` (ponowne uruchomienie
+pomija zastosowane migracje). Wartości domyślne są w [.env.example](.env.example).
+
+Testy są z decyzji zespołu trzymane lokalnie (`backend/tests/`,
+`frontend/src/**/*.test.*`) i nie trafiają do repozytorium ani do CI; wyniki
+podajemy w opisie PR. Backend: w `backend/` zainstaluj
+`requirements-dev.txt` i uruchom `python -m pytest` (testy bazy używają
+`TEST_DATABASE_URL`, domyślnie bazy `copernicus_test` w kontenerze `db`).
+Frontend: `npm --prefix frontend test`.
+
+## Gałęzie etapów (`stage/*`)
+
+Realizacja planu projektu idzie etapami. Każde zadanie etapu to osobna, mała
+gałąź `stage/<etap>-<temat>` (np. `stage/2-audyt-osm`) i osobny PR do `main`
+z jednym tematem. Gdy zadanie zależy od nieskalonego jeszcze PR, gałąź
+tworzymy z gałęzi tego PR i ustawiamy ją jako base PR (stacked PR); po
+scaleniu zależności bazą jest `origin/main`. Opis PR podaje: co zrobiono,
+uruchomione testy i wynik, ograniczenia i zależności. Gałęzie `stage/*`
+obejmują pliki wielu ról, dlatego nie używamy dla nich `scripts/team-git.mjs`,
+tylko zwykłych poleceń `git` (`git switch -c`, `git add <pliki>`, `git push -u`).
+Przed commitem sprawdzamy `git diff --cached --name-only`.
 
 ## Branche i commity
 
