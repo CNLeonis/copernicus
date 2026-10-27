@@ -6,7 +6,12 @@ Interfejs React + Vite, mapa Leaflet ustawiona początkowo na Opole.
 npm ci
 npm run dev
 npm run build
+npm test
 ```
+
+`npm test` uruchamia Vitest (jsdom, Testing Library). Pliki `*.test.js(x)` są
+z decyzji zespołu trzymane lokalnie i nie trafiają do repozytorium; bez nich
+polecenie kończy się sukcesem bez uruchomionych testów.
 
 Kliknij mapę, aby wybrać punkt, lub użyj geolokalizacji. Dla obsługi klawiaturą
 ustaw fokus na mapie, przesuń ją strzałkami i naciśnij „Wybierz środek mapy”.
@@ -16,26 +21,15 @@ Podkład mapy pochodzi z OpenStreetMap i wymaga połączenia z internetem.
 
 ## Dane i późniejsze podłączenie API
 
-`src/services/evaluation.js` udostępnia `evaluate({ latitude, longitude },
-{ signal })`. Obecnie zwraca wyłącznie kopię `src/mocks/evaluate.json`.
-Współrzędne nie wpływają na przykład; cały wynik `mode: "demo"` ma wspólne
-oznaczenie i komunikat, że nie dotyczy wybranego punktu. `null` wyświetla
-„Ocena jeszcze niedostępna”. Nie przyjmujemy skali punktacji ani jednostek.
-
-Po uzgodnionym wdrożeniu endpointu zastąp implementację `evaluate` wywołaniem:
-
-```js
-const response = await fetch('/api/evaluate', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(point),
-  signal,
-})
-if (!response.ok) throw new Error(`HTTP ${response.status}`)
-return response.json()
-```
-
-Kontrakt pozostaje w `../docs/api.md`. Komponenty widoku nie pobierają danych.
+`src/services/analysis.js` udostępnia `analyzeLocation({ latitude, longitude },
+{ signal, radiusM })` zgodnie z kontraktem `POST /api/analyze-location` w
+`../docs/api.md`. Dopóki endpoint nie jest zaimplementowany, domyślnie zwraca
+kopię `src/mocks/analyze-location.json` (`mode: "demo"`, wszystkie wartości
+`null`). Cały wynik demo ma wspólne oznaczenie i komunikat, że nie dotyczy
+wybranego punktu. `null` wyświetla „Brak danych”, a liczba `0` jest pokazywana
+jako prawidłowa wartość. Zmienna `VITE_ANALYSIS_SOURCE=api` przełącza serwis na
+prawdziwe API; odpowiedź spoza `2xx` jest błędem (z treścią `detail`, jeśli
+backend ją zwrócił). Komponenty widoku nie pobierają danych.
 Zmiana punktu anuluje poprzednie żądanie i usuwa stary wynik. Błąd pobierania
 wyświetla komunikat bez wyniku. Żądanie geolokalizacji zakończone po ręcznym
 wyborze punktu nie nadpisuje tego wyboru.

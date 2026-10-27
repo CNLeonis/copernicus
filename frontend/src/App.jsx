@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import LocationMap from './components/LocationMap.jsx'
 import EvaluationResult from './components/EvaluationResult.jsx'
-import { evaluate } from './services/evaluation.js'
+import { analyzeLocation } from './services/analysis.js'
 
 export default function App() {
   const [point, setPoint] = useState(null)
@@ -63,7 +63,7 @@ export default function App() {
     setResult(null)
     setError('')
     try {
-      const response = await evaluate(point, { signal: controller.signal })
+      const response = await analyzeLocation(point, { signal: controller.signal })
       if (!controller.signal.aborted) setResult(response)
     } catch (requestError) {
       if (!controller.signal.aborted) setError('Nie udało się pobrać oceny. Spróbuj ponownie.')
@@ -82,7 +82,7 @@ export default function App() {
         <section className="intro" aria-labelledby="page-heading">
           <p className="eyebrow">Twoje miejsce w mieście</p>
           <h1 id="page-heading">Wybierz punkt.<br /><span>Poznaj okolicę.</span></h1>
-          <p>Mapa Opola i podgląd oceny dostępu do codziennych potrzeb.</p>
+          <p>Mapa Opola i podgląd dostępności sklepów, szkół i przystanków.</p>
         </section>
         <section className="explorer" aria-label="Wybór lokalizacji">
           <LocationMap point={point} onSelect={selectPoint} />
