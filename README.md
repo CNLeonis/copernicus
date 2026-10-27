@@ -48,6 +48,7 @@ lokalne środowisko Pythona nie jest potrzebne):
 docker compose up -d db
 docker compose run --rm backend python -m pipeline.migrate
 docker compose run --rm backend python -m pipeline.import_osm
+docker compose run --rm backend python -m pipeline.grid
 ```
 
 - `pipeline.migrate` tworzy schemat; ponowne uruchomienie pomija zastosowane migracje.
@@ -57,6 +58,8 @@ docker compose run --rm backend python -m pipeline.import_osm
   pomijany; `--replace` odtwarza ją, usuwając wyniki od niej zależne. Na końcu
   polecenie wypisuje liczności i sumy kontrolne – porównaj je z
   [docs/data_sources.md](docs/data_sources.md#import--27102026).
+- `pipeline.grid` buduje siatki 250 m i 500 m dla najnowszego importu (kilkanaście
+  sekund); istniejąca wersja siatki jest pomijana, `--replace` ją odtwarza.
 - Pobieranie trwa kilka minut. Publiczny Overpass bywa przeciążony (HTTP 502/504);
   klient sam ponawia wtedy zapytanie.
 
