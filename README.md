@@ -36,9 +36,29 @@ wymagają uzgodnienia przed użyciem nowych pól przez frontend. Architekturę i
 
 ## Baza danych i testy lokalne
 
-`docker compose up -d db` uruchamia PostGIS. Schemat tworzy
-`docker compose exec backend python -m pipeline.migrate` (ponowne uruchomienie
-pomija zastosowane migracje). Wartości domyślne są w [.env.example](.env.example).
+`docker compose up -d db` uruchamia PostGIS. Wartości domyślne są w
+[.env.example](.env.example).
+
+### Odtworzenie danych od zera
+
+Obie osoby odtwarzają identyczną bazę tą samą sekwencją (wystarczy Docker,
+lokalne środowisko Pythona nie jest potrzebne):
+
+```sh
+docker compose up -d db
+docker compose run --rm backend python -m pipeline.migrate
+docker compose run --rm backend python -m pipeline.import_osm
+```
+
+- `pipeline.migrate` tworzy schemat; ponowne uruchomienie pomija zastosowane migracje.
+- `pipeline.import_osm` pobiera z Overpass stan OSM przypięty do stałej daty
+  (`[date:"..."]`), więc wynik nie zależy od dnia pobrania. Odpowiedzi trafiają do
+  `backend/data/raw/` i są używane ponownie. Ponowny import tej samej wersji jest
+  pomijany; `--replace` odtwarza ją, usuwając wyniki od niej zależne. Na końcu
+  polecenie wypisuje liczności i sumy kontrolne – porównaj je z
+  [docs/data_sources.md](docs/data_sources.md#import--27102026).
+- Pobieranie trwa kilka minut. Publiczny Overpass bywa przeciążony (HTTP 502/504);
+  klient sam ponawia wtedy zapytanie.
 
 Testy są z decyzji zespołu trzymane lokalnie (`backend/tests/`,
 `frontend/src/**/*.test.*`) i nie trafiają do repozytorium ani do CI; wyniki
