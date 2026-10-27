@@ -11,15 +11,28 @@ import time
 from datetime import datetime, timezone
 
 import requests
+import shapely
+from pyproj import Transformer
 from shapely import LineString, MultiPolygon, Polygon
 from shapely.ops import polygonize, unary_union
 
-from app.core.config import get_settings
+from app.core.config import METRIC_CRS, WGS84, get_settings
 
 USER_AGENT = "copernicus-opole-academic-project/0.1 (+https://github.com/CNLeonis/copernicus)"
 PAUSE_AFTER_REQUEST_S = 5
 RETRY_STATUSES = {429, 502, 503, 504}
 RETRY_WAITS_S = (30, 60, 120)
+
+_TO_METRIC = Transformer.from_crs(WGS84, METRIC_CRS, always_xy=True).transform
+_TO_WGS84 = Transformer.from_crs(METRIC_CRS, WGS84, always_xy=True).transform
+
+
+def to_metric(geometry):
+    return shapely.transform(geometry, lambda x, y: _TO_METRIC(x, y), interleaved=False)
+
+
+def to_wgs84(geometry):
+    return shapely.transform(geometry, lambda x, y: _TO_WGS84(x, y), interleaved=False)
 
 
 def overpass(query: str, *, cache_name: str, refresh: bool = False) -> dict:

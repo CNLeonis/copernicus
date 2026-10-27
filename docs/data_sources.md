@@ -81,6 +81,62 @@ Wszystkie trzy relacje mają identyczną geometrię (jeden poligon). Audyt uży�
 | `natural=water` / `waterway=riverbank` | 238 |
 | `landuse=forest` / `natural=wood` | 743 |
 
-## Otwarte decyzje przed importem (Etap 2B)
+## Decyzje zespołu – 27.10.2026
 
-Zespół wybiera na podstawie powyższych liczb: listę wartości `shop=*` uznanych za sklepy spożywcze, regułę rozpoznania szkół podstawowych, jednostkę liczenia przystanków i obsługę duplikatów, relację granicy oraz to, czy commitować snapshot danych. Do czasu decyzji import nie jest implementowany.
+Podjęte na bramce Etapu 2 na podstawie audytu powyżej. Implementacja: `backend/pipeline/import_osm.py`.
+
+| Temat | Decyzja | Uzasadnienie z audytu |
+| --- | --- | --- |
+| Sklepy | `shop` ∈ {`supermarket`, `convenience`, `grocery`, `greengrocer`, `bakery`, `butcher`, `pastry`}; `subcategory` = wartość `shop`. Pozostałe wartości (m.in. `variety_store`, `wholesale`, `kiosk`, `yes`, `department_store`) są pomijane. | Wykluczone wartości obejmują sieci niespożywcze, hurtownie, kioski prasowe i stacje paliw; `grocery` jest prawie nieużywany, więc sam nie wystarczy. |
+| Szkoły | `amenity=school`. `subcategory='primary'`, gdy `isced:level` zawiera 1 albo nazwa pasuje do „Szkoła Podstawowa” / „SP nr”; w przeciwnym razie `'general'`. | `isced:level` brakuje w 43 z 45 szkół w mieście, więc sama etykieta ISCED nie wystarczy. |
+| Szkoły językowe | Wykluczone jawną regułą: nazwa zawiera słowo „language”, „języków obcych” lub „szkoła językowa” (wyrażenie `LANGUAGE_SCHOOL_NAME`). Każde wykluczenie jest zapisywane w `validation_report.services.excluded`. | W OSM są oznaczone `amenity=school`, choć nie są szkołami w rozumieniu analizy. |
+| Duplikaty szkół | Scalane są tylko różne reprezentacje tego samego obiektu: węzeł leżący w obrysie (linia/relacja) **i** o tej samej znormalizowanej nazwie (`same_name_point_in_outline`) albo obrys bez nazwy zawierający dokładnie jeden nazwany węzeł (`single_named_point_in_unnamed_outline`). Zostaje węzeł, obrys jest pomijany. Sama bliskość lub podobna nazwa nie wystarcza. Każde scalenie i każda pozostała para ≤150 m są zapisywane w `validation_report`. | 17 par ≤150 m obejmuje zarówno duplikaty, jak i różne szkoły w jednym budynku lub zespole. |
+| Przystanki | Jednostka = stanowisko: `highway=bus_stop` lub `public_transport=platform`; `stop_position` jest pomijane. Obiekt z oboma tagami jest liczony raz (jeden element OSM = jeden rekord). Kategoria w bazie pozostaje `bus_stop`; `subcategory='rail_platform'` dla peronów kolejowych (`railway=platform` lub `train=yes`), w pozostałych przypadkach `'bus_tram_stop'`. Cechy obejmują obie podkategorie. | 63 pozycje `stop_position` dublują platformy o tej samej nazwie. Perony kolejowe stanowią **rozszerzenie specyfikacji**, która wymienia przystanki komunikacji publicznej bez rozróżnienia. |
+| Granica | Relacja **2730708** (gmina miejska Opole, TERYT 1661011). | Trzy relacje mają identyczną geometrię; wybrano jednostkę gminną. |
+| Snapshot danych | Danych OSM nie commitujemy. W repozytorium jest kod pobierania, a tutaj stan `osm_base`, zapytania i liczności. | Licencja ODbL i rozmiar; odtwarzalność zapewnia przypięcie daty (niżej). |
+
+## Import – 27.10.2026
+
+Polecenie: `docker compose run --rm backend python -m pipeline.import_osm` (pełna sekwencja w [README](../README.md#odtworzenie-danych-od-zera)).
+
+### Odtwarzalność
+
+- Wszystkie zapytania mają nagłówek Overpass `[date:"2026-10-27T13:49:01Z"]` (tzw. zapytanie archiwalne, *attic*). Zwracają stan OSM z chwili `osm_base` audytu niezależnie od dnia pobrania. Działanie sprawdzono przed importem: w tym samym bbox `shop=supermarket` dało 82 obiekty dla tej daty, 79 dla 2025-01-01 i 82 dla stanu bieżącego.
+- `data_imports.data_version = osm-2026-10-27T13:49:01Z`; ponowny import tej wersji jest pomijany (`--replace` go odtwarza).
+- Zapytania archiwalne nie korzystają z `area()`. Warstwy pokrycia terenu są pobierane w bbox granicy i filtrowane w Pythonie przecięciem z poligonem granicy, a usługi – w bbox bufora i filtrowane odległością ≤2000 m.
+- Do porównania baz obu osób służą sumy kontrolne SHA-256 posortowanych identyfikatorów (`validation_report`). Ta sama wersja danych powinna dać te same sumy.
+- Pełny raport: `data_imports.validation_report` oraz `backend/data/reports/import_osm_report.json` (zawiera treść wszystkich zapytań).
+
+### Usługi (`services`)
+
+| Kategoria | Podkategoria | Miasto | Bufor 0–2 km |
+| --- | --- | --- | --- |
+| `shop` | `convenience` | 69 | 9 |
+| `shop` | `supermarket` | 62 | 7 |
+| `shop` | `bakery` | 20 | 2 |
+| `shop` | `pastry` | 10 | 0 |
+| `shop` | `butcher` | 6 | 1 |
+| `shop` | `greengrocer` | 5 | 0 |
+| `shop` | `grocery` | 1 | 0 |
+| `school` | `primary` | 19 | 8 |
+| `school` | `general` | 23 | 4 |
+| `bus_stop` | `bus_tram_stop` | 553 | 99 |
+| `bus_stop` | `rail_platform` | 18 | 9 |
+
+- Suma kontrolna usług: `180ba8340867fb3b1fde1c2f0f2584d8e7d954ef247db944965b361416fcff5a`.
+- Odrzucone poza buforem (narożniki bbox): sklepy 27, przystanki 95, szkoły 12. Bez nazwy: sklepy 14, przystanki 78, szkoły 2.
+- Wykluczone szkoły językowe (2): „Lucky Language” (node/3774935038), „newCOSMOPOLITAN Centrum Języków Obcych” (node/3826146441).
+- Scalenia szkół (2): „Publiczna Szkoła Podstawowa w Dąbrowie” – node/11581824414 w obrysie way/704539922 o tej samej nazwie; „Publiczna Szkoła Podstawowa nr 24” – node/859299561 jako jedyny nazwany węzeł w nienazwanym obrysie way/319029743.
+- Po scaleniu zostaje 11 par szkół ≤150 m, których reguła nie łączy. Są to różne szkoły w jednym miejscu (np. PSP nr 3 i liceum, 8 m) albo przypadki niejednoznaczne: dwie reprezentacje „PLO nr VI”/„PLO nr 6” (way/227969035 i relation/2783107, 8,9 m, różnie zapisane nazwy) oraz nienazwany obrys way/232369822 obok „Niepublicznej SP Nasza Szkoła”. Lista jest w raporcie.
+- Uwaga: „Publiczne Przedszkole nr 36” i „Instytut Szkolenia Ekonomiczno-Prawnego” mają w OSM `amenity=school`. Decyzje ich nie wykluczają, więc są liczone jako `general`.
+
+### Pokrycie terenu (`land_cover`, wewnątrz granicy)
+
+| Rodzaj | Pobrane (bbox) | Poza granicą | Zapisane | Suma kontrolna SHA-256 |
+| --- | --- | --- | --- | --- |
+| `residential` | 1842 | 554 | 1288 | `14671b8983bb13574c4126abd6ed629a8880b66bb2706248654f7d23288eb2fe` |
+| `building` | 56 576 | 20 211 | 36 365 | `82a505ca2b9d06df9382164da38fff9fc22d782680e6df496ce6f53c754d912e` |
+| `water` | 420 | 182 | 238 | `ad8ef3f42378fd169c41a85d969a0cb7656a98fd3e58491cb6bf4c7f63e5e944` |
+| `forest` | 1290 | 546 | 744 | `630ca136063dd4f27e88e98889489b0161bc550f39640d3dae3ab605223f8f16` |
+
+Zapisywane są wyłącznie poligony (linie zamknięte i multipoligony) przecinające granicę; niepoprawne geometrie są naprawiane przez `make_valid`. Drobne różnice względem audytu (np. budynki 36 365 zamiast 36 372) wynikają z innej metody: audyt liczył filtrem obszaru Overpass, który obejmuje też węzły, a import liczy poligony przecinające geometrię granicy.

@@ -14,20 +14,12 @@ import re
 from collections import Counter
 from itertools import combinations
 
-import shapely
-from pyproj import Transformer
 from shapely import Point, STRtree
 
-from app.core.config import BOUNDARY_BUFFER_M, METRIC_CRS, OSM_ATTRIBUTION, WGS84, get_settings
-from pipeline.osm import element_point, overpass, relation_to_multipolygon
+from app.core.config import BOUNDARY_BUFFER_M, OSM_ATTRIBUTION, get_settings
+from pipeline.osm import element_point, overpass, relation_to_multipolygon, to_metric, to_wgs84
 
 SEARCH_WINDOW = (50.55, 17.75, 50.80, 18.10)  # S, W, N, E around Opole, only to find candidate relations
-TO_METRIC = Transformer.from_crs(WGS84, METRIC_CRS, always_xy=True).transform
-TO_WGS84 = Transformer.from_crs(METRIC_CRS, WGS84, always_xy=True).transform
-
-
-def transform(transformer, geometry):
-    return shapely.transform(geometry, lambda x, y: transformer(x, y), interleaved=False)
 
 SCHOOL_NAME_PATTERNS = {
     "szkoła podstawowa": re.compile(r"szko[łl]a\s+podstawowa|\bSP\s*(nr|\d)|publiczna\s+szko[łl]a\s+podst", re.I),
@@ -114,7 +106,7 @@ def count_by_zone(elements: list[dict], key) -> dict:
 
 
 def metric_point(element: dict) -> Point:
-    return transform(TO_METRIC, Point(element_point(element)))
+    return to_metric(Point(element_point(element)))
 
 
 def close_pairs(left: list[dict], right: list[dict], distance_m: float, same: bool) -> list[tuple]:
@@ -250,12 +242,12 @@ def to_markdown(report: dict) -> str:
 def run(relation_id: int, refresh: bool) -> dict:
     candidates = boundary_candidates(refresh)
     relation, city, boundary_data = boundary_geometry(relation_id, refresh)
-    city_metric = transform(TO_METRIC, city)
+    city_metric = to_metric(city)
     for candidate in candidates:
-        other = transform(TO_METRIC, boundary_geometry(candidate["id"], refresh)[1])
+        other = to_metric(boundary_geometry(candidate["id"], refresh)[1])
         candidate["area_km2"] = round(other.area / 1e6, 3)
         candidate["symmetric_difference_vs_selected_m2"] = round(other.symmetric_difference(city_metric).area, 1)
-    buffer = transform(TO_WGS84, city_metric.buffer(BOUNDARY_BUFFER_M))
+    buffer = to_wgs84(city_metric.buffer(BOUNDARY_BUFFER_M))
     w, s, e, n = buffer.bounds
     bbox = (round(s, 5), round(w, 5), round(n, 5), round(e, 5))
 
