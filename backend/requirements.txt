@@ -1,2 +1,15 @@
 fastapi==0.115.12
 uvicorn==0.34.2
+pydantic-settings==2.16.1
+SQLAlchemy==2.1.6
+psycopg[binary]==3.3.6
+GeoAlchemy2==0.20.0
+geopandas==1.2.0
+shapely==2.2.0
+pyproj==3.8.0
+pyogrio==0.13.0
+osmnx==2.1.1
+requests==2.34.2
+numpy==2.5.4
+pandas==3.1.0
+scikit-learn==1.9.1
