@@ -1,0 +1,23 @@
+{
+  "mode": "demo",
+  "location": null,
+  "inside_city": null,
+  "cell_id": null,
+  "grid_version": null,
+  "distance_method": "euclidean",
+  "radius_m": 1000,
+  "point_features": {
+    "nearest_shop_m": null,
+    "nearest_school_m": null,
+    "nearest_bus_stop_m": null,
+    "shops_within_radius": null,
+    "schools_within_radius": null,
+    "bus_stops_within_radius": null
+  },
+  "cell_features": null,
+  "clustering": [],
+  "assessment": [],
+  "data_version": null,
+  "feature_version": null,
+  "warnings": []
+}

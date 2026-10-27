@@ -61,7 +61,8 @@ dd { margin: 0; }
 .overall-card .eyebrow { display: block; margin-bottom: 8px; color: #63745a; }
 h3 { font-weight: 500; font-size: 17px; margin: 0; }
 .unavailable { color: #68755f; font-size: 12px; }
-.category-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.category-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
+.warnings { font-size: 12px; color: #725b2c; margin: 0; padding-left: 18px; }
 .category-card { background: #fff; border: 1px solid #e3e4d7; border-radius: 10px; padding: 21px 18px; }
 .category-meta { display: flex; justify-content: space-between; font-size: 10px; color: #74826d; margin-bottom: 28px; }
 .category-meta span:first-child { color: #879b76; }
@@ -71,5 +72,5 @@ h3 { font-weight: 500; font-size: 17px; margin: 0; }
 .assessment > div { margin-top: 12px; }
 .assessment dd { margin-top: 5px; overflow-wrap: anywhere; }
 footer { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid #dce2d8; padding: 22px 0 28px; font-size: 11px; color: #75816f; }
-@media (max-width: 960px) { .site-header, main, footer { width: calc(100% - 40px); } .explorer { grid-template-columns: minmax(0, 1fr) 300px; } .location-panel { padding: 24px 20px; } .category-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 960px) { .site-header, main, footer { width: calc(100% - 40px); } .explorer { grid-template-columns: minmax(0, 1fr) 300px; } .location-panel { padding: 24px 20px; } .category-grid { grid-template-columns: 1fr; } }
 @media (max-width: 680px) { .site-header { height: 76px; } .brand { font-size: 21px; } .city-label { font-size: 11px; } .intro { padding: 32px 0 25px; } h1 { letter-spacing: -1.5px; } .explorer { grid-template-columns: 1fr; } .map-shell, .map { min-height: 360px; height: 360px; } .location-panel { border-left: 0; border-top: 1px solid #d7dfd2; } .category-grid { grid-template-columns: 1fr; } .overall-card, .section-heading { align-items: start; flex-direction: column; gap: 12px; } .overall-card .unavailable { margin: 0; } .demo-results { padding: 0 16px 16px; } .demo-banner { margin-inline: -16px; padding: 18px 16px; } footer { flex-wrap: wrap; } }
