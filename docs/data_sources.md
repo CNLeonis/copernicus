@@ -140,3 +140,33 @@ Polecenie: `docker compose run --rm backend python -m pipeline.import_osm` (peł
 | `forest` | 1290 | 546 | 744 | `630ca136063dd4f27e88e98889489b0161bc550f39640d3dae3ab605223f8f16` |
 
 Zapisywane są wyłącznie poligony (linie zamknięte i multipoligony) przecinające granicę; niepoprawne geometrie są naprawiane przez `make_valid`. Drobne różnice względem audytu (np. budynki 36 365 zamiast 36 372) wynikają z innej metody: audyt liczył filtrem obszaru Overpass, który obejmuje też węzły, a import liczy poligony przecinające geometrię granicy.
+
+## Siatka analityczna – 27.10.2026
+
+Polecenie: `docker compose run --rm backend python -m pipeline.grid` (domyślnie 250 m i 500 m dla najnowszego importu). Implementacja: `backend/pipeline/grid.py`.
+
+### Reguły
+
+- Kwadraty w EPSG:2180, początek siatki wyrównany do wielokrotności 1000 m (lewy dolny róg bbox granicy w dół), więc komórki 250 m mieszczą się dokładnie w komórkach 500 m (dopasowanie przestrzenne do porównań rozdzielczości).
+- Wersja siatki: `g<rozmiar>-<data_version bez separatorów>`, np. `g250-osm20261027T134901Z`; ID komórki: `<wersja>-c<kolumna>-r<wiersz>` (kolumny od zachodu, wiersze od południa), np. `g250-osm20261027T134901Z-c012-r034`.
+- Zapisywana jest pełna geometria kwadratu (`full_geometry`) i część wewnątrz granicy (`geometry`) z jej rzeczywistą powierzchnią `area_m2`.
+- `analysis_status='excluded_sliver'`, gdy część w mieście ma mniej niż 10% powierzchni pełnej komórki (**parametr roboczy** `MIN_AREA_SHARE`); takie komórki są zapisane, ale nie wchodzą do analizy.
+- Punkt reprezentatywny: centroid, jeśli leży wewnątrz komórki i nie w wodzie ani lesie; w przeciwnym razie punkt wewnętrzny (`representative_point`) największej części komórki poza wodą i lasem (części poniżej 1 m² to artefakty obliczeń). Gdy całą komórkę pokrywa woda lub las, punkt zostaje w niej, a `point_land_cover` ma wartość `water`/`forest`. Sprawdzenie połączenia punktu z siecią pieszą należy do Etapu 4 (odległości sieciowe).
+- `building_count`: każdy budynek liczony raz – w komórce, w której leży jego punkt wewnętrzny (budynki z punktem poza granicą są pomijane). `residential_area_m2`: powierzchnia sumy poligonów `landuse=residential` w komórce (nakładające się poligony liczone raz).
+- `land_use_status='potentially_residential'`, gdy w komórce jest `landuse=residential` **lub** co najmniej 1 budynek (**parametr roboczy** `MIN_BUILDINGS`); w przeciwnym razie `no_residential_evidence`. Brak dowodów zabudowy nie oznacza terenu niezamieszkanego, a status nie mówi nic o liczbie mieszkańców.
+
+### Wynik
+
+| | 250 m | 500 m |
+| --- | --- | --- |
+| Komórki | 2632 | 708 |
+| `included` / `excluded_sliver` | 2534 / 98 | 669 / 39 |
+| Suma powierzchni komórek = powierzchnia miasta | 148,808 km² | 148,808 km² |
+| Punkt: centroid / `representative_point` | 2137 / 495 | 563 / 145 |
+| Punkt w lesie / wodzie (komórki w całości pokryte) | 183 / 14 | 33 / 3 |
+| `included`: `landuse=residential` | 1068 | 381 |
+| `included`: tylko budynki (bez `landuse=residential`) | 270 | 64 |
+| `included`: brak dowodów zabudowy | 1196 | 224 |
+| Suma kontrolna SHA-256 | `d728939805e6b032795e1be83a5866a0cc4537ea4dbdb3a49adc53f5e7674e58` | `1ec000d4926a6c0f4f15e1d922afeddeb64b8a8d6a8f89dd8c4af3a329514141` |
+
+Kontrole w PostGIS (obie siatki): wszystkie geometrie poprawne, każdy punkt reprezentatywny leży w swojej komórce, żadna komórka z dowodami zabudowy nie ma punktu w wodzie ani lesie. Suma `building_count` = 36 364, o 1 mniej niż budynków w `land_cover`, bo jeden budynek przecina granicę, a jego punkt leży poza miastem. Suma `residential_area_m2` = 21,517 km² i jest równa powierzchni sumy poligonów `landuse=residential` w granicy.
