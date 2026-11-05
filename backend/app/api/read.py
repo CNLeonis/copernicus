@@ -2,7 +2,7 @@
 
 import json
 import math
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Connection, text
@@ -15,6 +15,7 @@ ConnectionDep = Annotated[Connection, Depends(get_connection)]
 
 SERVICE_LIMIT = 5000
 CELL_LIMIT = 10000
+ML_RUN_LIMIT = 500
 
 
 def parse_bbox(value: str | None) -> tuple[float, float, float, float] | None:
@@ -297,3 +298,109 @@ def cell_detail(
             "assessment": [dict(item) for item in assessments],
         },
     }
+
+
+@router.get("/ml/runs")
+def ml_runs(
+    connection: ConnectionDep,
+    grid_version: str | None = None,
+    algorithm: Literal["kmeans", "hdbscan"] | None = None,
+    published: bool | None = None,
+    limit: Annotated[int, Query(ge=1, le=ML_RUN_LIMIT)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict:
+    clauses = [
+        "(CAST(:grid AS text) IS NULL OR r.grid_version = :grid)",
+        "(CAST(:algorithm AS text) IS NULL OR r.algorithm = :algorithm)",
+        "(CAST(:published AS boolean) IS NULL OR r.is_published = :published)",
+    ]
+    params = {"grid": grid_version, "algorithm": algorithm, "published": published,
+              "limit": limit, "offset": offset}
+    where = " AND ".join(clauses)
+    total = connection.execute(text(
+        "SELECT count(*)::integer FROM ml_runs r WHERE " + where
+    ), params).scalar_one()
+    rows = connection.execute(text(
+        "SELECT r.id, r.algorithm, r.experiment, r.parameters, r.feature_version, r.grid_version, "
+        "d.data_version, r.sample_filter, r.feature_set, r.feature_names, r.transform, r.scaler_name, "
+        "r.random_state, r.n_samples, r.n_clusters, r.noise_fraction, r.metrics, r.is_published, r.created_at "
+        "FROM ml_runs r JOIN feature_versions f ON f.feature_version = r.feature_version "
+        "JOIN data_imports d ON d.id = f.import_id WHERE " + where +
+        " ORDER BY r.created_at DESC, r.id LIMIT :limit OFFSET :offset"
+    ), params).mappings().all()
+    return {"items": [dict(row) for row in rows], "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/ml/runs/{run_id}")
+def ml_run_detail(run_id: str, connection: ConnectionDep) -> dict:
+    row = connection.execute(text(
+        "SELECT r.id, r.algorithm, r.experiment, r.parameters, r.feature_version, r.grid_version, "
+        "d.data_version, r.sample_filter, r.feature_set, r.feature_names, r.transform, r.scaler_name, "
+        "r.random_state, r.n_samples, r.n_clusters, r.noise_fraction, r.metrics, r.library_versions, "
+        "r.is_published, r.artifact_path, r.created_at "
+        "FROM ml_runs r JOIN feature_versions f ON f.feature_version = r.feature_version "
+        "JOIN data_imports d ON d.id = f.import_id WHERE r.id = :id"
+    ), {"id": run_id}).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Nie znaleziono przebiegu ML.")
+    sizes = connection.execute(text(
+        "SELECT cluster_label, cell_count FROM cluster_statistics WHERE run_id = :id ORDER BY cluster_label"
+    ), {"id": run_id}).mappings().all()
+    return {**dict(row), "cluster_sizes": [dict(item) for item in sizes]}
+
+
+@router.get("/ml/runs/{run_id}/clusters")
+def ml_run_clusters(
+    run_id: str,
+    connection: ConnectionDep,
+    assessment_version: str | None = None,
+) -> dict:
+    run = connection.execute(text(
+        "SELECT feature_version FROM ml_runs WHERE id = :id"
+    ), {"id": run_id}).mappings().first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Nie znaleziono przebiegu ML.")
+    if assessment_version is not None:
+        valid_assessment = connection.execute(text(
+            "SELECT 1 FROM assessment_versions WHERE assessment_version = :assessment "
+            "AND feature_version = :feature"
+        ), {"assessment": assessment_version, "feature": run["feature_version"]}).scalar()
+        if valid_assessment is None:
+            raise HTTPException(status_code=404, detail="Nie znaleziono oceny dla wersji cech tego przebiegu.")
+    rows = connection.execute(text(
+        "WITH access_by_cluster AS ("
+        " SELECT ca.cluster_label, count(ar.accessibility_class)::integer AS assessed_count, "
+        " count(*) FILTER (WHERE ar.accessibility_class = 'low')::integer AS low_count "
+        " FROM cluster_assignments ca LEFT JOIN accessibility_results ar "
+        " ON ar.cell_id = ca.cell_id AND ar.assessment_version = CAST(:assessment AS text) "
+        " WHERE ca.run_id = :id GROUP BY ca.cluster_label) "
+        "SELECT cs.cluster_label, (cs.cluster_label = -1) AS is_noise, cs.cell_count, cs.area_m2, "
+        "cs.sample_share, cs.feature_statistics, "
+        "CASE WHEN CAST(:assessment AS text) IS NULL OR ac.assessed_count = 0 THEN NULL "
+        "ELSE ac.low_count::double precision / ac.assessed_count END AS low_access_share "
+        "FROM cluster_statistics cs LEFT JOIN access_by_cluster ac USING (cluster_label) "
+        "WHERE cs.run_id = :id ORDER BY cs.cluster_label"
+    ), {"id": run_id, "assessment": assessment_version}).mappings().all()
+    return {"run_id": run_id, "assessment_version": assessment_version,
+            "items": [dict(row) for row in rows], "total": len(rows)}
+
+
+@router.get("/ml/runs/{run_id}/assignments")
+def ml_run_assignments(
+    run_id: str,
+    connection: ConnectionDep,
+    limit: Annotated[int, Query(ge=1, le=CELL_LIMIT)] = 5000,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> dict:
+    exists = connection.execute(text("SELECT 1 FROM ml_runs WHERE id = :id"), {"id": run_id}).scalar()
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Nie znaleziono przebiegu ML.")
+    total = connection.execute(text(
+        "SELECT count(*)::integer FROM cluster_assignments WHERE run_id = :id"
+    ), {"id": run_id}).scalar_one()
+    rows = connection.execute(text(
+        "SELECT cell_id, cluster_label, (cluster_label = -1) AS is_noise "
+        "FROM cluster_assignments WHERE run_id = :id ORDER BY cell_id LIMIT :limit OFFSET :offset"
+    ), {"id": run_id, "limit": limit, "offset": offset}).mappings().all()
+    return {"run_id": run_id, "items": [dict(row) for row in rows],
+            "total": total, "limit": limit, "offset": offset}

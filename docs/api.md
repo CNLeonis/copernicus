@@ -2,7 +2,7 @@
 
 Wszystkie endpointy mają prefiks `/api` i zwracają JSON. Frontend używa względnych adresów, np. `fetch('/api/health')`; Vite przekazuje je do backendu. Zmiany kontraktu (ścieżka, metoda, dane wejściowe, odpowiedź, błędy) zapisujemy tutaj w tym samym PR co implementację.
 
-**Status:** kontrakt endpointów odczytu dla metadanych, granicy, usług i siatki został zaimplementowany w etapie 4. `GET /api/health`, `/api/metadata`, `/api/boundary`, `/api/services`, `/api/cells` i `/api/cells/{id}` odczytują zapisane dane. Endpointy ML i `POST /api/analyze-location` pozostają do implementacji w kolejnych etapach. Frontend może nadal pracować na lokalnym mocku `mode: "demo"` do czasu podłączenia.
+**Status:** endpointy odczytu metadanych, granicy, usług, siatki oraz zapisanych runów ML są zaimplementowane. `POST /api/analyze-location` pozostaje do implementacji. Żaden endpoint nie trenuje modelu; frontend może nadal pracować na lokalnym mocku `mode: "demo"` dla analizy punktu.
 
 Kontrakt realizuje sekcję 6.2 `docs/SPECYFIKACJA_PROJEKTU.md`. API tylko **odczytuje** wyniki zapisane przez pipeline offline (`backend/pipeline`); żaden endpoint nie pobiera danych z Overpass ani nie trenuje modeli.
 
@@ -83,23 +83,23 @@ Szczegóły jednej komórki: geometria (Feature), `representative_point` (`[lon,
 
 ## GET /api/ml/runs
 
-Parametry: `grid_version`, `algorithm` (`kmeans` | `hdbscan`), `published` (`true` → tylko modele wybrane do mapy).
+Parametry: `grid_version`, `algorithm` (`kmeans` | `hdbscan`), `published` (opcjonalny filtr; `true` zwraca wyłącznie runy wybrane do mapy), `limit` (domyślnie 100, maks. 500) i `offset`. Bez `published` zwracane są zarówno runy robocze, jak i opublikowane.
 
-Lista runów: `id`, `algorithm`, `experiment`, `parameters`, `feature_version`, `grid_version`, `data_version`, `sample_filter`, `feature_set`, `feature_names`, `transform`, `scaler_name`, `random_state`, `n_samples`, `n_clusters`, `noise_fraction`, `metrics`, `is_published`, `created_at`.
+Odpowiedź zawiera `items`, `total`, `limit` i `offset`. Obiekt runu: `id`, `algorithm`, `experiment`, `parameters`, `feature_version`, `grid_version`, `data_version`, `sample_filter`, `feature_set`, `feature_names`, `transform`, `scaler_name`, `random_state`, `n_samples`, `n_clusters`, `noise_fraction`, `metrics`, `is_published`, `created_at`.
 
 `metrics` zawiera `silhouette`, `davies_bouldin`, `calinski_harabasz` (lub `null`, gdy metryka nie ma zastosowania, np. mniej niż 2 klastry) oraz dla HDBSCAN `evaluated_fraction` – odsetek obserwacji użytych do metryk po odrzuceniu szumu.
 
 ## GET /api/ml/runs/{run_id}
 
-Ten sam obiekt co w liście oraz `library_versions` i `cluster_sizes` (`[{"cluster_label": 0, "cell_count": 0}]`). `404` dla nieznanego runu.
+Ten sam obiekt co w liście oraz `library_versions`, `artifact_path` i `cluster_sizes` (`[{"cluster_label": 0, "cell_count": 0}]`). `404` dla nieznanego runu.
 
 ## GET /api/ml/runs/{run_id}/clusters
 
-Parametr opcjonalny: `assessment_version`. Lista grup: `cluster_label`, `is_noise`, `cell_count`, `area_m2`, `sample_share`, `feature_statistics` (dla każdej z 9 cech: `median`, `q1`, `q3`, `min`, `max`, `missing`), a przy podanym `assessment_version` także `low_access_share` (udział komórek ocenionych jako `low` według niezależnych reguł).
+Parametr opcjonalny: `assessment_version`. Lista grup: `cluster_label`, `is_noise`, `cell_count`, `area_m2`, `sample_share`, `feature_statistics` (dla każdej z 9 cech: `median`, `q1`, `q3`, `min`, `max`, `missing`), a przy podanym `assessment_version` także `low_access_share` (udział ocenionych komórek klastra z klasą `low`; `null`, gdy żadna komórka nie ma jeszcze oceny). `-1` HDBSCAN jest zwracany jako osobna grupa szumu.
 
 ## GET /api/ml/runs/{run_id}/assignments
 
-Parametry: `limit` (domyślnie 5000, maks. 10000), `offset`. Odpowiedź: `{"run_id": "...", "total": 0, "limit": 5000, "offset": 0, "items": [{"cell_id": "...", "cluster_label": 0}]}`.
+Parametry: `limit` (domyślnie 5000, maks. 10000), `offset`. Odpowiedź: `{"run_id": "...", "total": 0, "limit": 5000, "offset": 0, "items": [{"cell_id": "...", "cluster_label": 0, "is_noise": false}]}`.
 
 ## POST /api/analyze-location
 

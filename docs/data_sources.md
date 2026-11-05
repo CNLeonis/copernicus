@@ -215,3 +215,72 @@ We wszystkich trzech kategoriach `no_source=0` i `error=0`. Import zawierał
 192 sklepy, 54 szkoły i 679 przystanków. Pełne parametry i podsumowania przebiegów
 są w lokalnych raportach `features_<feature_version>.json` (raporty i surowe dane
 pozostają poza Git, zgodnie z `.gitignore`).
+
+## Eksperymenty ML — Etap 5A
+
+Polecenie: `python -m pipeline.ml [--grid-version WERSJA] [--feature-version WERSJA]`
+z opcjami `--sample-filter all|potentially_residential`,
+`--algorithm all|kmeans|hdbscan` i `--replace`. Domyślnie pipeline bierze najnowszą
+wersję cech siatki 250 m, filtr `all`, oba skalery i oba algorytmy. Wyniki zapisuje
+w `ml_runs`, `cluster_assignments` i `cluster_statistics`; raport JSON pozostaje
+lokalnie w `backend/data/reports/ml_<feature_version>_<sample_filter>.json`.
+
+Przygotowanie próby wyklucza `excluded_sliver`. Filtr `all` uwzględnia wszystkie
+pozostałe komórki, a `potentially_residential` tylko komórki z dowodem `landuse=residential`
+lub budynkiem według parametrów Etapu 3. W obu przypadkach wiersze z brakującą,
+NaN/inf albo ujemną cechą nie są imputowane: niekompletne wiersze są pomijane,
+a ich liczby zapisane w `sample_counts` runu. Przed skalowaniem `log1p` stosuje się
+wyłącznie do sześciu zliczeń; odległości pozostają w metrach. Badane są osobno
+`StandardScaler` i `RobustScaler`. Po tej transformacji raport zapisuje kwartyle,
+zakresy i liczbę obserwacji poza płotami Tukeya (1,5 × IQR) dla każdej cechy.
+To diagnostyka rozkładu: obserwacje odstające pozostają w próbie i nie są usuwane.
+
+Macierz bazowa zawiera dziewięć cech dostępności. K-Means sprawdza `k=2..8`,
+`k-means++`, `n_init=20`, `max_iter=300` i `random_state=42`. HDBSCAN sprawdza
+`min_cluster_size={15,30,60}` i `min_samples={5,15}` dla obu scalerów, z metryką
+euklidesową i wyborem `eom`. Użyta jest implementacja `sklearn.cluster.HDBSCAN`
+z przypiętego scikit-learn 1.9.1. W tej implementacji `min_samples` uwzględnia
+samą obserwację; wyniki HDBSCAN nie są wprost równoważne pakietowi `hdbscan`
+([referencja API scikit-learn](https://scikit-learn.org/stable/modules/generated/sklearn.cluster.HDBSCAN.html)).
+Szum zachowuje etykietę `-1`; nie jest interpretowany jako niska dostępność.
+
+Zapisywane są Silhouette, Davies–Bouldin i Calinski–Harabasz, gdy spełnione są
+warunki ich stosowania. W HDBSCAN metryki liczone są wyłącznie dla punktów
+przypisanych do klastrów; `evaluated_fraction` dokumentuje ich udział. Każdy run
+zawiera wersję importu/siatki/cech, pełną konfigurację, seed, wersje bibliotek,
+komplet przypisań dla próby i statystyki oryginalnych cech w klastrach (mediana,
+kwartyle, min/max, braki, liczebność, powierzchnia i udział próby). Identyfikator
+runu jest stabilny dla wersji cech, konfiguracji i wersji bibliotek. Ponowne
+uruchomienie pomija istniejące runy; `--replace` usuwa je wraz z zależnymi wynikami.
+Runy nie są automatycznie publikowane do mapy.
+
+### Wyniki na zapisanym imporcie OSM
+
+Uruchomiono pełny zestaw 26 konfiguracji (14 K-Means i 12 HDBSCAN) dla każdej
+pary siatka/filtr: dwa skalery, `k=2..8` oraz macierz parametrów HDBSCAN powyżej.
+W sumie zapisano 104 runy na rzeczywistym imporcie `osm-2026-10-27T13:49:01Z`
+i wersjach cech z Etapu 4. Poniższe maksima Silhouette są tylko opisem przebadanej
+siatki konfiguracji, nie automatycznym wyborem ani oceną jakości obszarów.
+
+Odtworzenie czterech przebiegów na obecnych wersjach cech:
+
+```sh
+docker compose run --rm backend python -m pipeline.ml --feature-version f-g250-osm20261027T134901Z-1-854bafdf6966 --sample-filter all
+docker compose run --rm backend python -m pipeline.ml --feature-version f-g250-osm20261027T134901Z-1-854bafdf6966 --sample-filter potentially_residential
+docker compose run --rm backend python -m pipeline.ml --feature-version f-g500-osm20261027T134901Z-1-854bafdf6966 --sample-filter all
+docker compose run --rm backend python -m pipeline.ml --feature-version f-g500-osm20261027T134901Z-1-854bafdf6966 --sample-filter potentially_residential
+```
+
+| Siatka | Próba | Komórki kompletne | Pominięte przez brak cechy | K-Means: najwyższy Silhouette (k, scaler) | HDBSCAN: klastry; udział szumu |
+| --- | --- | ---: | ---: | --- | --- |
+| 250 m | `all` | 2056 | 478 | 0,415 (`k=2`, robust) | 2–11; 0,5–11,1% |
+| 250 m | `potentially_residential` | 1186 | 152 | 0,346 (`k=2`, standard) | 2; 1,9–25,1% |
+| 500 m | `all` | 529 | 140 | 0,417 (`k=2`, robust) | 2–9; 1,5–38,2% |
+| 500 m | `potentially_residential` | 381 | 64 | 0,413 (`k=2`, robust) | 0–5; 3,4–100% |
+
+Dla `potentially_residential` HDBSCAN na siatce 500 m w części konfiguracji
+oznaczył całą próbę jako szum (0 klastrów). To wynik zależny od konfiguracji i
+małej próby, nie wskazanie niedostatku usług. Klastry opisują podobieństwo
+wektorów cech; rozpoznawanie niskiej dostępności wymaga osobnych jawnych reguł
+z kolejnego etapu. Wszystkie runy są dostępne w lokalnym PostGIS, a raporty
+szczegółowe nie są commitowane.

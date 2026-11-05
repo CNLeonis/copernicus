@@ -33,6 +33,10 @@ Etap 4 udostępnia odczyt `GET /api/metadata`, `/api/boundary`, `/api/services`,
 wersje danych i format GeoJSON. `POST /api/analyze-location` pozostaje w trybie demo
 do czasu implementacji kolejnego etapu.
 
+Pipeline ML uruchamia się offline przez `python -m pipeline.ml`. Zapisuje wersjonowane
+runy K-Means i HDBSCAN, metryki, przypisania oraz statystyki klastrów w PostGIS.
+API odczytuje je przez `/api/ml/runs`; trening nie jest uruchamiany przez API ani UI.
+
 Analiza punktu korzysta z kontraktu `POST /api/analyze-location` (zastąpił
 roboczy `POST /api/evaluate`). Dopóki endpoint nie jest zaimplementowany,
 frontend używa mocka oznaczonego `mode: "demo"`. Dalsze zmiany kontraktu
@@ -55,6 +59,7 @@ docker compose run --rm backend python -m pipeline.migrate
 docker compose run --rm backend python -m pipeline.import_osm
 docker compose run --rm backend python -m pipeline.grid
 docker compose run --rm backend python -m pipeline.features
+docker compose run --rm backend python -m pipeline.ml
 ```
 
 - `pipeline.migrate` tworzy schemat; ponowne uruchomienie pomija zastosowane migracje.
@@ -69,6 +74,10 @@ docker compose run --rm backend python -m pipeline.features
 - `pipeline.features` liczy dziewięć cech euklidesowych dla komórek wybranej siatki
   i zapisuje wersjonowane wyniki. Przy braku źródła lub niewystarczającym pokryciu
   zapisuje `null`, a nie zero; ponowne uruchomienie pomija istniejącą wersję.
+- `pipeline.ml` porównuje K-Means (`k=2..8`) i HDBSCAN dla wybranej wersji cech,
+  dwóch skalowań i jawnego filtra próby. Runy są idempotentne i domyślnie
+  niepublikowane; szczegóły eksperymentów i wyników są w
+  [docs/data_sources.md](docs/data_sources.md#eksperymenty-ml--etap-5a).
 - Pobieranie trwa kilka minut. Publiczny Overpass bywa przeciążony (HTTP 502/504);
   klient sam ponawia wtedy zapytanie.
 

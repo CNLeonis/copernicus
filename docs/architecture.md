@@ -12,7 +12,7 @@ OpenStreetMap (Overpass) ──► backend/pipeline (offline, CLI) ──► Pos
 
 - **Pipeline offline** (`backend/pipeline`, uruchamiany `python -m pipeline.<krok>`): migracje, audyt i import OSM, siatka, cechy, trening modeli, reguły dostępności. Tylko tutaj odpytywany jest Overpass i trenowane są modele.
 - **Baza** (PostGIS, schemat w `backend/db/migrations`): geometrie w EPSG:2180 (metry); każdy wynik ma wersję (`data_version`, `grid_version`, `feature_version`, `run_id`, `assessment_version`), więc można odtworzyć, z jakich danych powstał.
-- **API** (`backend/app`): endpointy odczytu zapisanych danych i wyników. Odczyt obejmuje metadane, granicę, usługi oraz komórki siatki. `POST /api/analyze-location` i endpointy ML pozostają do implementacji; żaden endpoint nie trenuje modelu. Kontrakt: [api.md](api.md).
+- **API** (`backend/app`): endpointy odczytu zapisanych danych, siatki i runów ML. `POST /api/analyze-location` pozostaje do implementacji; żaden endpoint nie trenuje modelu. Kontrakt: [api.md](api.md).
 - **Frontend** (`frontend`): mapa Leaflet z podkładem OSM i analiza wskazanego punktu. Do czasu implementacji `POST /api/analyze-location` wynik punktu pochodzi z mocka oznaczonego `mode: "demo"`.
 - **Uruchomienie**: `compose.yaml` (serwisy `db`, `backend`, `frontend`).
 
