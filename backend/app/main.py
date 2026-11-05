@@ -1,10 +1,18 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.api.read import router as read_router
 from app.database import get_engine
 
 app = FastAPI(title="Copernicus API")
+app.include_router(read_router)
+
+
+@app.exception_handler(SQLAlchemyError)
+def database_error_handler(_request: Request, _error: SQLAlchemyError) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": "Baza danych jest niedostępna."})
 
 
 @app.get("/api/health")

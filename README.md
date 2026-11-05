@@ -28,6 +28,11 @@ Przy pierwszym starcie Compose pobiera obrazy bazowe oraz instaluje zależności
 
 Frontend wywołuje ścieżki `/api/...`. Vite przekazuje je do backendu wewnątrz sieci Compose, dlatego w kodzie przeglądarki wystarczy `fetch('/api/...')`. Ustalenia dotyczące odpowiedzi API zapisujemy w [docs/api.md](docs/api.md). Backend może dodawać endpointy niezależnie; frontend może równolegle rozwijać widoki na podstawie uzgodnionego kontraktu.
 
+Etap 4 udostępnia odczyt `GET /api/metadata`, `/api/boundary`, `/api/services`,
+`/api/cells` i `/api/cells/{id}`. Kontrakt opisuje filtry bbox, paginację,
+wersje danych i format GeoJSON. `POST /api/analyze-location` pozostaje w trybie demo
+do czasu implementacji kolejnego etapu.
+
 Analiza punktu korzysta z kontraktu `POST /api/analyze-location` (zastąpił
 roboczy `POST /api/evaluate`). Dopóki endpoint nie jest zaimplementowany,
 frontend używa mocka oznaczonego `mode: "demo"`. Dalsze zmiany kontraktu
@@ -49,6 +54,7 @@ docker compose up -d db
 docker compose run --rm backend python -m pipeline.migrate
 docker compose run --rm backend python -m pipeline.import_osm
 docker compose run --rm backend python -m pipeline.grid
+docker compose run --rm backend python -m pipeline.features
 ```
 
 - `pipeline.migrate` tworzy schemat; ponowne uruchomienie pomija zastosowane migracje.
@@ -60,6 +66,9 @@ docker compose run --rm backend python -m pipeline.grid
   [docs/data_sources.md](docs/data_sources.md#import--27102026).
 - `pipeline.grid` buduje siatki 250 m i 500 m dla najnowszego importu (kilkanaście
   sekund); istniejąca wersja siatki jest pomijana, `--replace` ją odtwarza.
+- `pipeline.features` liczy dziewięć cech euklidesowych dla komórek wybranej siatki
+  i zapisuje wersjonowane wyniki. Przy braku źródła lub niewystarczającym pokryciu
+  zapisuje `null`, a nie zero; ponowne uruchomienie pomija istniejącą wersję.
 - Pobieranie trwa kilka minut. Publiczny Overpass bywa przeciążony (HTTP 502/504);
   klient sam ponawia wtedy zapytanie.
 

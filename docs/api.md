@@ -2,7 +2,7 @@
 
 Wszystkie endpointy mają prefiks `/api` i zwracają JSON. Frontend używa względnych adresów, np. `fetch('/api/health')`; Vite przekazuje je do backendu. Zmiany kontraktu (ścieżka, metoda, dane wejściowe, odpowiedź, błędy) zapisujemy tutaj w tym samym PR co implementację.
 
-**Status:** kontrakt do uzgodnienia przez zespół. Zaimplementowany jest tylko `GET /api/health`; pozostałe endpointy powstaną w kolejnych etapach. Frontend do tego czasu używa lokalnego mocka oznaczonego `mode: "demo"`.
+**Status:** kontrakt endpointów odczytu dla metadanych, granicy, usług i siatki został zaimplementowany w etapie 4. `GET /api/health`, `/api/metadata`, `/api/boundary`, `/api/services`, `/api/cells` i `/api/cells/{id}` odczytują zapisane dane. Endpointy ML i `POST /api/analyze-location` pozostają do implementacji w kolejnych etapach. Frontend może nadal pracować na lokalnym mocku `mode: "demo"` do czasu podłączenia.
 
 Kontrakt realizuje sekcję 6.2 `docs/SPECYFIKACJA_PROJEKTU.md`. API tylko **odczytuje** wyniki zapisane przez pipeline offline (`backend/pipeline`); żaden endpoint nie pobiera danych z Overpass ani nie trenuje modeli.
 
