@@ -170,3 +170,48 @@ Polecenie: `docker compose run --rm backend python -m pipeline.grid` (domyślnie
 | Suma kontrolna SHA-256 | `d728939805e6b032795e1be83a5866a0cc4537ea4dbdb3a49adc53f5e7674e58` | `1ec000d4926a6c0f4f15e1d922afeddeb64b8a8d6a8f89dd8c4af3a329514141` |
 
 Kontrole w PostGIS (obie siatki): wszystkie geometrie poprawne, każdy punkt reprezentatywny leży w swojej komórce, żadna komórka z dowodami zabudowy nie ma punktu w wodzie ani lesie. Suma `building_count` = 36 364, o 1 mniej niż budynków w `land_cover`, bo jeden budynek przecina granicę, a jego punkt leży poza miastem. Suma `residential_area_m2` = 21,517 km² i jest równa powierzchni sumy poligonów `landuse=residential` w granicy.
+
+## Cechy dostępności — Etap 4
+
+Polecenie: `python -m pipeline.features [--grid-version WERSJA] [--replace]`.
+Domyślnie używa najnowszej siatki powiązanej z ukończonym importem. Wyniki trafiają
+do `feature_versions` i `cell_features`; raport przebiegu zapisuje się w
+`backend/data/reports/features_<feature_version>.json`.
+
+- Wszystkie odległości są euklidesowe w EPSG:2180 od punktu reprezentatywnego
+  komórki do punktów usług zapisanych w imporcie. Liczone są trzy odległości
+  najbliższego obiektu oraz sześć liczebności w promieniach 500 i 1000 m.
+- Źródłem jest wersjonowany import usług w granicy miasta z buforem. Zliczenie
+  `0` oznacza, że źródło istnieje, pokrywa cały zadany promień i nie zawiera
+  obiektu w nim. Brak źródła lub niepełne pokrycie daje `null`.
+- Odległość do najbliższego obiektu zapisuje się tylko wtedy, gdy znaleziony
+  punkt mieści się w obszarze, w którym import gwarantuje kompletność. Dla punktu
+  wewnątrz miasta bezpieczny promień pokrycia to bufor źródła plus odległość
+  punktu reprezentatywnego od granicy miasta. Gdy nie można potwierdzić, że
+  kandydat jest najbliższy, odległość pozostaje `null`.
+- Status jest przechowywany osobno dla każdej kategorii: `ok`, `none_found`,
+  `no_source` lub `error`. `buffer_sufficient` jest prawdziwe tylko wtedy, gdy
+  pokrycie wystarcza dla największego promienia i najbliższy obiekt został
+  wiarygodnie ustalony we wszystkich trzech kategoriach.
+- Komórki graniczne i `excluded_sliver` dostają cechy tak samo jak pozostałe;
+  późniejsze eksperymenty filtrują je według jawnego `analysis_status`.
+  Identyfikator `feature_version` wiąże wynik z wersją siatki, importu i metodą.
+
+### Wynik dla przypiętego importu OSM
+
+Pipeline uruchomiono na zapisanym imporcie `osm-2026-10-27T13:49:01Z`, z buforem
+2 km. Każdy status poniżej obejmuje wszystkie komórki danej siatki, także
+`excluded_sliver`. `ok` oznacza, że odległość najbliższego obiektu jest
+potwierdzona w granicach pokrycia importu; `none_found` oznacza, że takiej
+odległości nie da się ustalić dla tej komórki. Zera w zliczeniach pozostają
+prawidłowymi wynikami, odrębnymi od tych statusów.
+
+| Siatka | Wersja cech | Komórki | `buffer_sufficient` | Sklepy: `ok` / `none_found` | Szkoły: `ok` / `none_found` | Przystanki: `ok` / `none_found` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 250 m | `f-g250-osm20261027T134901Z-1-854bafdf6966` | 2632 | 2103 | 2470 / 162 | 2114 / 518 | 2615 / 17 |
+| 500 m | `f-g500-osm20261027T134901Z-1-854bafdf6966` | 708 | 552 | 660 / 48 | 554 / 154 | 702 / 6 |
+
+We wszystkich trzech kategoriach `no_source=0` i `error=0`. Import zawierał
+192 sklepy, 54 szkoły i 679 przystanków. Pełne parametry i podsumowania przebiegów
+są w lokalnych raportach `features_<feature_version>.json` (raporty i surowe dane
+pozostają poza Git, zgodnie z `.gitignore`).
