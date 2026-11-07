@@ -123,9 +123,7 @@ Odpowiedź `200` (liczby poniżej są tylko ilustracją formatu):
 
 ```json
 {
-  "mode": "computed",
   "location": {"latitude": 50.67, "longitude": 17.92},
-  "inside_city": true,
   "cell_id": "g250_v1_c012_r034",
   "grid_version": "g250_v1",
   "distance_method": "euclidean",
@@ -145,4 +143,49 @@ Odpowiedź `200` (liczby poniżej są tylko ilustracją formatu):
 ```
 
 `point_features` są obliczane dla dokładnego punktu w EPSG:2180; `cell_features` zawierają zapisane wartości dla przypisanej komórki. Zliczenia dotyczą `radius_m`. Gwarantowany zasięg pokrycia wynika z udokumentowanego bufora importu i odległości punktu od granicy miasta. Jeśli dla kategorii brakuje źródła albo nie można potwierdzić pełnego zasięgu, jej cechy punktu mają wartość `null`, a nie zero. Ostrzeżenia mogą zawierać kody: `no_source:<category>`, `insufficient_buffer:<category>`, `nearest_distance_uncovered:<category>`, `no_feature_version`, `no_cell_features`, `cell_feature_no_source:<category>`, `cell_feature_error:<category>`, `cell_feature_buffer_insufficient`, `no_published_model` i `no_assessment`.
-`clustering` zawiera przypisania zapisanej komórki z opublikowanych przebiegów dla wybranej siatki; endpoint nie trenuje modeli ani nie przewiduje wyniku dla nowych obserwacji. Etykieta HDBSCAN `-1` jest zachowywana wraz z `is_noise: true` i nie oznacza niskiej dostępności. `assessment` zawiera zapisane oceny komórki dla wybranej wersji cech. Brak modeli lub ocen oznacza pustą listę i ostrzeżenie. `mode: "computed"` oznacza odpowiedź backendu, a `mode: "demo"` pozostaje oznaczeniem mocka frontendu.
+`clustering` zawiera przypisania zapisanej komórki z opublikowanych przebiegów dla wybranej siatki; endpoint nie trenuje modeli ani nie przewiduje wyniku dla nowych obserwacji. Etykieta HDBSCAN `-1` jest zachowywana wraz z `is_noise: true` i nie oznacza niskiej dostępności. `assessment` zawiera zapisane oceny komórki dla wybranej wersji cech. Brak modeli lub ocen oznacza pustą listę i ostrzeżenie. W odpowiedzi API pole `mode` nie występuje; `mode: "demo"` jest dodawane wyłącznie przez mock frontendu.
+
+### Jak rozumieć odpowiedź i prezentować ją w interfejsie
+
+Odpowiedź łączy dwie perspektywy: obliczenia dla dokładnie wskazanego punktu oraz zapisane wyniki komórki siatki, w której leży ten punkt. Nie należy przedstawiać tych wartości jako jednego zestawu pomiarów.
+
+#### Kontekst i pochodzenie danych
+
+- `mode`: w odpowiedzi API to pole nie występuje, bo endpoint zawsze zwraca obliczony wynik. Mock frontendu ustawia `mode: "demo"`, aby interfejs wyraźnie odróżniał przykładowe dane od odpowiedzi API.
+- `location`: współrzędne analizowanego punktu w WGS84. Punkt poza granicą miasta dostaje `422`, dlatego udana odpowiedź nie potrzebuje osobnego pola `inside_city`.
+- `cell_id` i `grid_version`: wskazują komórkę oraz rozdzielczość siatki, do której przypisano punkt.
+- `distance_method` i `radius_m`: opisują sposób i zasięg obliczeń dla `point_features`. Metoda MVP to odległość euklidesowa w EPSG:2180, czyli odległość w linii prostej, nie trasa piesza.
+- `data_version` i `feature_version`: pozwalają ustalić, z którego importu OSM i której zapisanej wersji cech pochodzą wyniki. Warto pokazać je w szczegółach albo sekcji informacji o danych, aby wynik dało się odtworzyć.
+
+#### `point_features` — cechy dokładnego punktu
+
+Są obliczane podczas żądania dla współrzędnych podanych przez użytkownika:
+
+- `nearest_shop_m`, `nearest_school_m`, `nearest_bus_stop_m`: odległość w metrach od punktu do najbliższej usługi danej kategorii.
+- `shops_within_radius`, `schools_within_radius`, `bus_stops_within_radius`: liczba obiektów danej kategorii w odległości nie większej niż `radius_m`.
+
+To wynik GIS dla klikniętego miejsca, a nie wejście do treningu K-Means/HDBSCAN. Jeśli wartość wynosi `null`, nie ma źródła albo dane nie pozwalają potwierdzić pokrycia; `0` oznacza prawidłowo policzone zero obiektów. Interfejs powinien pokazywać te stany odrębnie.
+
+#### `cell_features` — zapisane cechy komórki
+
+To dziewięć cech zapisanych wcześniej dla komórki `cell_id`: trzy odległości do najbliższych usług oraz sześć zliczeń w promieniu 500 i 1000 m. Są liczone dla punktu reprezentatywnego komórki, a nie dla dokładnego punktu klikniętego przez użytkownika. Dlatego ich wartości mogą się różnić od `point_features`; to oczekiwane.
+
+Wersjonowane cechy komórek są danymi, z których offline pipeline ML przygotowuje eksperymenty. Każdy run zapisuje własne `feature_names` i `feature_version`, więc nie każdy model musi używać wszystkich dziewięciu kolumn. Sam endpoint nie przekazuje punktu do modelu i nie wykonuje treningu ani predykcji dla nowych współrzędnych. `cell_features` są przydatne w UI do pokazania profilu komórki i porównania go z dokładnym punktem.
+
+#### `clustering` — zapisane przypisanie ML
+
+To lista przypisań komórki do opublikowanych runów K-Means/HDBSCAN, nie ocena dostępności dla dokładnego punktu. `cluster_label` jest identyfikatorem grupy, a nie rangą. Dla HDBSCAN `cluster_label: -1` wraz z `is_noise: true` oznacza szum, czyli komórkę o profilu niepasującym do utworzonych skupisk; nie oznacza niskiej dostępności. Pusta lista i `no_published_model` znaczą, że dla tej komórki nie ma opublikowanego przypisania do pokazania.
+
+#### `assessment` — niezależna ocena według reguł
+
+To zapisany wynik jawnych reguł dostępności, odrębny od grupowania ML. `assessment_version` identyfikuje wersję reguł, `variant` mówi, czy ocena jest względna, czy progowa, `accessibility_class` zawiera klasę, a `accessibility_score` i `criteria_results` pozwalają pokazać wynik oraz jego uzasadnienie. Pusta lista i `no_assessment` oznaczają, że ocena nie została jeszcze obliczona/zapisana. Brak oceny nie powinien być zamieniany na klasę niską ani na zero.
+
+#### Wskazówki dla interfejsu
+
+- Rozdzielić sekcję „Wskazany punkt” (`point_features`) od „Komórka siatki” (`cell_id`, `cell_features`, `clustering`, `assessment`).
+- Nie łączyć klastra z oceną dostępności: to różne wyniki odpowiadające na różne pytania.
+- Wyświetlać `null` jako „Brak danych” lub „Nie można potwierdzić”, a `0` jako zero obiektów.
+- Traktować `no_published_model` i `no_assessment` jako informację o braku zapisanych wyników, nie jako błąd obliczeń punktu.
+- Oznaczać odpowiedź `mode: "demo"` jako demonstracyjną, żeby nie pomylić jej z obliczeniami dla klikniętego miejsca.
+
+Wyniki API opisują dane OSM i przyjęte obliczenia przestrzenne. Same w sobie nie dowodzą, że mieszkańcy mają lub nie mają dostępu do usługi ani nie stanowią rekomendacji urbanistycznej.

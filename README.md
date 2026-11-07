@@ -34,7 +34,7 @@ Pipeline ML uruchamia się offline przez `python -m pipeline.ml`. Zapisuje wersj
 runy K-Means i HDBSCAN, metryki, przypisania oraz statystyki klastrów w PostGIS.
 API odczytuje je przez `/api/ml/runs`; trening nie jest uruchamiany przez API ani UI.
 
-Analiza punktu korzysta z kontraktu `POST /api/analyze-location`, który zastąpił wcześniejszy projekt `POST /api/evaluate`. Frontend może nadal korzystać z mocka `mode: "demo"`; odpowiedź backendu ma `mode: "computed"`. Architektura i świadome odstępstwa od specyfikacji są opisane w [docs/architecture.md](docs/architecture.md).
+Analiza punktu korzysta z kontraktu `POST /api/analyze-location`, który zastąpił wcześniejszy projekt `POST /api/evaluate`. Frontend może nadal korzystać z mocka `mode: "demo"`; odpowiedź z API jest obliczona; tylko mock ma `mode: "demo"`. Architektura i świadome odstępstwa od specyfikacji są opisane w [docs/architecture.md](docs/architecture.md).
 
 ## Baza danych i testy lokalne
 
