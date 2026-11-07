@@ -28,20 +28,13 @@ Przy pierwszym starcie Compose pobiera obrazy bazowe oraz instaluje zależności
 
 Frontend wywołuje ścieżki `/api/...`. Vite przekazuje je do backendu wewnątrz sieci Compose, dlatego w kodzie przeglądarki wystarczy `fetch('/api/...')`. Ustalenia dotyczące odpowiedzi API zapisujemy w [docs/api.md](docs/api.md). Backend może dodawać endpointy niezależnie; frontend może równolegle rozwijać widoki na podstawie uzgodnionego kontraktu.
 
-Etap 4 udostępnia odczyt `GET /api/metadata`, `/api/boundary`, `/api/services`,
-`/api/cells` i `/api/cells/{id}`. Kontrakt opisuje filtry bbox, paginację,
-wersje danych i format GeoJSON. `POST /api/analyze-location` pozostaje w trybie demo
-do czasu implementacji kolejnego etapu.
+Etap 4 udostępnia endpointy odczytu metadanych, granicy, usług i komórek. `POST /api/analyze-location` oblicza cechy wskazanego punktu i odczytuje zapisane wyniki jego komórki. Nie trenuje modeli ani nie wykonuje predykcji ML; frontend może nadal korzystać z mocka `mode: "demo"`.
 
 Pipeline ML uruchamia się offline przez `python -m pipeline.ml`. Zapisuje wersjonowane
 runy K-Means i HDBSCAN, metryki, przypisania oraz statystyki klastrów w PostGIS.
 API odczytuje je przez `/api/ml/runs`; trening nie jest uruchamiany przez API ani UI.
 
-Analiza punktu korzysta z kontraktu `POST /api/analyze-location` (zastąpił
-roboczy `POST /api/evaluate`). Dopóki endpoint nie jest zaimplementowany,
-frontend używa mocka oznaczonego `mode: "demo"`. Dalsze zmiany kontraktu
-wymagają uzgodnienia przed użyciem nowych pól przez frontend. Architekturę i
-świadome odstępstwa od specyfikacji opisuje [docs/architecture.md](docs/architecture.md).
+Analiza punktu korzysta z kontraktu `POST /api/analyze-location`, który zastąpił wcześniejszy projekt `POST /api/evaluate`. Frontend może nadal korzystać z mocka `mode: "demo"`; odpowiedź backendu ma `mode: "computed"`. Architektura i świadome odstępstwa od specyfikacji są opisane w [docs/architecture.md](docs/architecture.md).
 
 ## Baza danych i testy lokalne
 

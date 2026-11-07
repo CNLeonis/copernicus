@@ -2,7 +2,7 @@
 
 Wszystkie endpointy mają prefiks `/api` i zwracają JSON. Frontend używa względnych adresów, np. `fetch('/api/health')`; Vite przekazuje je do backendu. Zmiany kontraktu (ścieżka, metoda, dane wejściowe, odpowiedź, błędy) zapisujemy tutaj w tym samym PR co implementację.
 
-**Status:** endpointy odczytu metadanych, granicy, usług, siatki oraz zapisanych runów ML są zaimplementowane. `POST /api/analyze-location` pozostaje do implementacji. Żaden endpoint nie trenuje modelu; frontend może nadal pracować na lokalnym mocku `mode: "demo"` dla analizy punktu.
+**Status:** Zaimplementowano endpointy odczytu metadanych, granicy, usług, siatki, zapisanych przebiegów ML oraz `POST /api/analyze-location`. Żaden endpoint nie trenuje modelu; frontend może nadal korzystać z lokalnego mocka `mode: "demo"` podczas analizy punktu.
 
 Kontrakt realizuje sekcję 6.2 `docs/SPECYFIKACJA_PROJEKTU.md`. API tylko **odczytuje** wyniki zapisane przez pipeline offline (`backend/pipeline`); żaden endpoint nie pobiera danych z Overpass ani nie trenuje modeli.
 
@@ -114,6 +114,9 @@ Zastępuje wcześniejszy roboczy kontrakt `POST /api/evaluate` (z kategorią `pa
 - `latitude` ∈ [-90, 90], `longitude` ∈ [-180, 180] — wymagane.
 - `distance_method`: tylko `euclidean` (odległość sieciowa nie jest w MVP; inna wartość → `422`).
 - `radius_m`: 100–2000 (górna granica wynika z bufora pobranych danych 2 km), domyślnie 1000.
+- Brak wskazanej siatki lub komórki obejmującej punkt oznacza `404`.
+- Jeśli punkt leży na wspólnej krawędzi komórek, wybierana jest komórka o leksykograficznie najmniejszym `cell_id`.
+- `grid_version`: opcjonalna wersja siatki; domyślnie najnowsza siatka 250 m. Import usług jest wybierany na podstawie granicy powiązanej z siatką, a wersja cech musi być zgodna z siatką i importem.
 - Punkt poza granicą Opola → `422` z komunikatem.
 
 Odpowiedź `200` (liczby poniżej są tylko ilustracją formatu):
@@ -141,4 +144,5 @@ Odpowiedź `200` (liczby poniżej są tylko ilustracją formatu):
 }
 ```
 
-`point_features` są liczone dla dokładnego punktu (PostGIS, EPSG:2180); `cell_features` to zapisane cechy komórki, do której należy punkt. `clustering` zawiera przypisanie **zapisanej** komórki w opublikowanych modelach (bez trenowania i bez predykcji dla nowych obserwacji). `warnings` opisuje np. brak opublikowanego modelu, brak ocen albo niewystarczający bufor. `mode` zachowuje konwencję z widoku demonstracyjnego: `demo` oznacza przykładowy mock frontendu, `computed` – wynik backendu.
+`point_features` są obliczane dla dokładnego punktu w EPSG:2180; `cell_features` zawierają zapisane wartości dla przypisanej komórki. Zliczenia dotyczą `radius_m`. Gwarantowany zasięg pokrycia wynika z udokumentowanego bufora importu i odległości punktu od granicy miasta. Jeśli dla kategorii brakuje źródła albo nie można potwierdzić pełnego zasięgu, jej cechy punktu mają wartość `null`, a nie zero. Ostrzeżenia mogą zawierać kody: `no_source:<category>`, `insufficient_buffer:<category>`, `nearest_distance_uncovered:<category>`, `no_feature_version`, `no_cell_features`, `cell_feature_no_source:<category>`, `cell_feature_error:<category>`, `cell_feature_buffer_insufficient`, `no_published_model` i `no_assessment`.
+`clustering` zawiera przypisania zapisanej komórki z opublikowanych przebiegów dla wybranej siatki; endpoint nie trenuje modeli ani nie przewiduje wyniku dla nowych obserwacji. Etykieta HDBSCAN `-1` jest zachowywana wraz z `is_noise: true` i nie oznacza niskiej dostępności. `assessment` zawiera zapisane oceny komórki dla wybranej wersji cech. Brak modeli lub ocen oznacza pustą listę i ostrzeżenie. `mode: "computed"` oznacza odpowiedź backendu, a `mode: "demo"` pozostaje oznaczeniem mocka frontendu.
