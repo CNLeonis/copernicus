@@ -156,9 +156,7 @@ def analyze_location(payload: AnalyzeLocationRequest, connection: ConnectionDep)
         warnings.append("no_assessment")
 
     return {
-        "mode": "computed",
         "location": {"latitude": payload.latitude, "longitude": payload.longitude},
-        "inside_city": True,
         "cell_id": cell["id"],
         "grid_version": grid["grid_version"],
         "distance_method": payload.distance_method,
