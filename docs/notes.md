@@ -255,3 +255,34 @@ To jest już materiał nadający się do przedstawienia prowadzącemu jako wynik
 Natomiast nie kończyłbym jeszcze prac nad ML. Pokazane obrazy dotyczą K-Means, a przecież w projekcie macie także HDBSCAN. Powinniście przeprowadzić analogiczną interpretację HDBSCAN, porównać oba algorytmy i dopiero zdecydować, które wyniki będą publikowane.
 
 Najważniejszy wniosek z tych wykresów jest taki: K-Means faktycznie wykrył zróżnicowanie przestrzenne dostępności usług w Opolu, a wariant z trzema klastrami daje już zrozumiałe profile obszarów. Pozostaje potwierdzić ich przydatność do identyfikacji deficytów, zamiast traktować sam wynik grupowania jako gotową ocenę.
+
+## Etap 6 — stałe progi dostępności
+
+Ocena dostępności to jawna reguła na cechach GIS, niezależna od etykiety klastra.
+K-Means i HDBSCAN grupują podobne komórki; same nie mówią, czy usługi są
+wystarczająco blisko.
+
+Dla każdej kategorii usług:
+
+- `high`: co najmniej 1 obiekt w promieniu 500 m;
+- `medium`: 0 w promieniu 500 m, ale co najmniej 1 w promieniu 1000 m;
+- `low`: 0 w promieniu 1000 m;
+- `no_data`: nie można wiarygodnie policzyć wymaganych promieni.
+
+Klasa łączna jest `low`, gdy co najmniej dwie z trzech kategorii są niskie.
+Jest `medium`, gdy dokładnie jedna kategoria jest niska lub co najmniej dwie są
+pośrednie. Jest `high`, gdy wszystkie trzy są znane, żadna nie jest niska i
+najwyżej jedna jest pośrednia. Niekompletne dane dają `no_data`, chyba że dwie
+znane kategorie są już niskie. W takiej sytuacji klasa pozostaje niska, ale UI
+powinien pokazać ostrzeżenie o brakującej kategorii.
+
+Liczby `0` i `null` znaczą co innego. Zero w prawidłowo pokrytym promieniu
+oznacza, że importowany zbiór nie zawiera tam obiektu; `null` oznacza, że nie
+możemy wiarygodnie ustalić liczby. Nieznana odległość najbliższego obiektu nie
+blokuje oceny, jeśli zliczenia w 500 i 1000 m są znane.
+
+Wynik liczbowy to średnia punktów kategorii: `high=1`, `medium=0.5`, `low=0`.
+Jest `null`, jeśli choć jedna kategoria ma `no_data`. Progi są kryteriami
+badawczymi projektu, nie normą prawną. Oceny należy policzyć dla nowej wersji
+cech po poprawie zasięgu danych OSM; dotychczasowe 104 eksperymenty ML pozostają
+historycznym punktem odniesienia.
