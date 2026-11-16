@@ -284,3 +284,73 @@ małej próby, nie wskazanie niedostatku usług. Klastry opisują podobieństwo
 wektorów cech; rozpoznawanie niskiej dostępności wymaga osobnych jawnych reguł
 z kolejnego etapu. Wszystkie runy są dostępne w lokalnym PostGIS, a raporty
 szczegółowe nie są commitowane.
+
+## Stała ocena dostępności — Etap 6
+
+Pipeline: `python -m pipeline.assessment --feature-version WERSJA`.
+Wersja cech jest wymagana jawnie; domyślny filtr to `potentially_residential`,
+a `--sample-filter all` służy do opisu rozmieszczenia usług w całej siatce.
+Pomijane są komórki `excluded_sliver`. Oceny i raport JSON zapisują się
+w `assessment_versions`, `accessibility_results` oraz lokalnie
+`backend/data/reports/assessment_<assessment_version>.json`.
+
+Oceny można uruchomić dla każdej jawnej wersji cech. Dla importu bazowego
+z 2026-10-27 zapisano już wyniki porównawcze (sekcja poniżej). Po utworzeniu
+i sprawdzeniu poprawionej wersji cech należy uruchomić te same dwa filtry,
+aby porównać wyniki z bazą:
+
+```sh
+docker compose run --rm backend python -m pipeline.assessment --feature-version WERSJA --sample-filter potentially_residential
+docker compose run --rm backend python -m pipeline.assessment --feature-version WERSJA --sample-filter all
+```
+
+Ocena kategorii korzysta wyłącznie z liczebności punktów OSM w zapisanych
+promieniach, nie z odległości do najbliższego obiektu:
+
+| Warunek | Klasa kategorii |
+| --- | --- |
+| Co najmniej 1 obiekt w 500 m | `high` |
+| 0 obiektów w 500 m i co najmniej 1 w 1000 m | `medium` |
+| 0 obiektów w 1000 m | `low` |
+| Brakuje wiarygodnej liczby w wymaganym promieniu | `no_data` |
+
+Stosowane kolumny: `shops_500m`/`shops_1000m`,
+`schools_500m`/`schools_1000m`, `bus_stops_500m`/`bus_stops_1000m`.
+Promienie są włączne. `0` to prawidłowy wynik przy potwierdzonym pokryciu;
+`null` to brak danych. Nieznana odległość do najbliższego obiektu nie blokuje
+oceny, gdy wymagane zliczenia są znane.
+
+Klasa łączna: `low`, gdy co najmniej dwie kategorie są `low`; `medium`, gdy
+dokładnie jedna jest `low` lub co najmniej dwie są `medium`; `high`, gdy dane
+wszystkich kategorii są kompletne, żadna nie jest `low` i najwyżej jedna jest
+`medium`. Gdy dane są niekompletne, klasa łączna jest `no_data`, chyba że dwie
+znane kategorie już spełniają warunek `low`. W tym przypadku `partial_data_note`
+informuje o brakującej kategorii. `accessibility_score` jest średnią punktów
+`high=1`, `medium=0.5`, `low=0`; dla komórki z `no_data` wynik liczbowy jest
+`null`.
+
+Reguły są stałymi progami projektu, nie oceną zgodności prawnej ani jakością
+życia. Wyniki końcowe interpretować na poprawionej, nowej wersji cech po
+rozszerzeniu i sprawdzeniu pokrycia importu OSM; wcześniejszą wersję zachować
+jako bazę porównawczą. Wersja oceny zawiera identyfikator cech,
+siatkę, import i filtr próby. Dotychczasowe 104 runy ML pozostają bez zmian;
+ocena progowa nie modyfikuje dziewięciu cech ani przypisań klastrów.
+
+### Ocena bazowa przed poprawą zasięgu OSM
+
+Zapisano wyniki dla istniejącego importu `osm-2026-10-27T13:49:01Z`
+(bufor 2 km). W czterech próbach wszystkie wymagane zliczenia w 500/1000 m
+są znane, więc żadna komórka nie otrzymała `no_data`, mimo braków odległości
+do najbliższej usługi w 478 komórkach siatki 250 m i 140 komórkach siatki 500 m.
+
+| Siatka | Próba | Ocenione | Wysoka | Pośrednia | Niska | Brak danych | Wersja oceny |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 250 m | `potentially_residential` | 1338 | 459 | 556 | 323 | 0 | `as-e85974069e45dddf2b90e936` |
+| 250 m | `all` | 2534 | 477 | 874 | 1183 | 0 | `as-18941ffc6365c1b5ed4f38de` |
+| 500 m | `potentially_residential` | 445 | 118 | 188 | 139 | 0 | `as-6b5cd03fff0e99d743b69d22` |
+| 500 m | `all` | 669 | 118 | 230 | 321 | 0 | `as-ccbe0dbda5317aeb8dcafad2` |
+
+To jest punkt odniesienia do porównania po aktualizacji importu. Zachować te
+wersje ocen i porównywać je wyłącznie z wynikami tej samej siatki i tego samego
+filtra. Jeśli przy imporcie zmieni się geometria komórek, dopasowywać komórki
+przestrzennie, a nie zakładać zgodności identyfikatorów.

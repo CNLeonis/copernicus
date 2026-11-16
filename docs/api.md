@@ -38,7 +38,7 @@ Kontrakt realizuje sekcję 6.2 `docs/SPECYFIKACJA_PROJEKTU.md`. API tylko **odcz
                      "created_at": "ISO 8601", "parameters": {}}],
   "feature_versions": [{"feature_version": "...", "grid_version": "...", "data_version": "...",
                         "distance_method": "euclidean", "parameters": {}, "computed_at": "ISO 8601"}],
-  "assessment_versions": [{"assessment_version": "...", "feature_version": "...", "variant": "relative",
+  "assessment_versions": [{"assessment_version": "...", "feature_version": "...", "variant": "threshold",
                            "description": "...", "parameters": {}}]
 }
 ```
@@ -134,8 +134,8 @@ Odpowiedź `200` (liczby poniżej są tylko ilustracją formatu):
   },
   "cell_features": {"nearest_shop_m": 240.0, "shops_500m": 2, "...": "9 cech zapisanej komórki"},
   "clustering": [{"run_id": "...", "algorithm": "kmeans", "cluster_label": 2, "is_noise": false}],
-  "assessment": [{"assessment_version": "...", "variant": "relative", "accessibility_class": "medium",
-                  "accessibility_score": 0.41, "criteria_results": {}}],
+  "assessment": [{"assessment_version": "...", "variant": "threshold", "accessibility_class": "medium",
+                  "accessibility_score": 0.5, "criteria_results": {}}],
   "data_version": "...",
   "feature_version": "...",
   "warnings": []
@@ -178,7 +178,7 @@ To lista przypisań komórki do opublikowanych runów K-Means/HDBSCAN, nie ocena
 
 #### `assessment` — niezależna ocena według reguł
 
-To zapisany wynik jawnych reguł dostępności, odrębny od grupowania ML. `assessment_version` identyfikuje wersję reguł, `variant` mówi, czy ocena jest względna, czy progowa, `accessibility_class` zawiera klasę, a `accessibility_score` i `criteria_results` pozwalają pokazać wynik oraz jego uzasadnienie. Pusta lista i `no_assessment` oznaczają, że ocena nie została jeszcze obliczona/zapisana. Brak oceny nie powinien być zamieniany na klasę niską ani na zero.
+To zapisany wynik jawnych reguł dostępności, odrębny od grupowania ML. Etap 6 zapisuje wariant `threshold`. Dla każdej kategorii `criteria_results.categories` zawiera klasę i liczby usług w promieniu 500/1000 m: `high` przy co najmniej 1 w 500 m, `medium` przy 0 w 500 m i co najmniej 1 w 1000 m, `low` przy 0 w 1000 m, `no_data` gdy brakuje wiarygodnej liczby w wymaganym promieniu. Znane zera pozostają zerami. `accessibility_score` jest średnią punktów kategorii (`high`=1, `medium`=0,5, `low`=0); jest `null`, gdy kategoria ma `no_data`. Klasa łączna jest `low` przy co najmniej dwóch niskich kategoriach; `medium` przy dokładnie jednej niskiej albo co najmniej dwóch pośrednich; `high` przy kompletnych danych, bez kategorii niskich i najwyżej jednej pośredniej. Przy braku danych zwracane jest `no_data`, chyba że dwie znane kategorie są niskie. `partial_data_note` wyjaśnia ten ostatni przypadek. Pusta lista ocen i `no_assessment` oznaczają, że nie zapisano oceny dla wybranej wersji cech.
 
 #### Wskazówki dla interfejsu
 
