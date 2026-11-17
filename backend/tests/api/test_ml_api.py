@@ -69,11 +69,17 @@ def test_cells_default_to_published_six_count_run_and_keep_legacy_selectable(db,
     size, legacy_id = seed_run(db)
     default_id = run(cell_size_m=size, engine=db)["runs"][0]["id"]
 
+    listing = db_client.get("/api/ml/runs", params={
+        "cell_size_m": size, "algorithm": "kmeans", "published": "true", "limit": 1,
+    })
     default = db_client.get("/api/cells", params={"cell_size_m": size, "limit": 1})
     legacy = db_client.get("/api/cells", params={
         "cell_size_m": size, "run_id": legacy_id, "limit": 1,
     })
 
+    assert listing.status_code == 200
+    assert listing.json()["items"][0]["id"] == default_id
+    assert listing.json()["items"][0]["parameters"]["feature_set"] == "counts_six"
     assert default.status_code == 200
     assert default.json()["run_id"] == default_id
     assert default.json()["features"][0]["properties"]["cluster_label"] is not None
