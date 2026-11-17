@@ -385,7 +385,10 @@ def ml_runs(
         "r.scaler_name, r.random_state, r.n_samples, r.n_clusters, r.noise_fraction, "
         "r.metrics, r.is_published "
         "FROM ml_runs r WHERE " + where +
-        " ORDER BY r.id LIMIT :limit OFFSET :offset"
+        " ORDER BY CASE WHEN r.is_published AND r.algorithm = 'kmeans' "
+        "AND r.parameters->>'feature_set' = 'counts_six' "
+        "AND r.parameters->>'n_clusters' = '2' THEN 0 ELSE 1 END, "
+        "r.cell_size_m, r.id LIMIT :limit OFFSET :offset"
     ), params).mappings().all()
     return {"items": [dict(row) for row in rows], "total": total, "limit": limit, "offset": offset}
 
