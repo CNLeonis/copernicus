@@ -59,15 +59,20 @@ def test_analyze_location_computes_point_features_and_missing_sources(db, db_cli
 def test_analyze_location_uses_only_published_assignments_and_keeps_noise(db, db_client):
     seed_synthetic(db)
     with db.begin() as connection:
-        for run_id, algorithm, label, published in (
-            ("SYNTHETIC-kmeans-unpublished", "kmeans", 0, False),
-            ("SYNTHETIC-hdbscan-published", "hdbscan", -1, True),
+        for run_id, algorithm, label, published, parameters in (
+            ("SYNTHETIC-kmeans-unpublished", "kmeans", 0, False, '{}'),
+            ("SYNTHETIC-kmeans-nine", "kmeans", 1, True, '{"n_clusters": 2}'),
+            ("SYNTHETIC-kmeans-six", "kmeans", 0, True,
+             '{"n_clusters": 2, "feature_set": "counts_six"}'),
+            ("SYNTHETIC-hdbscan-published", "hdbscan", -1, True, '{}'),
         ):
             connection.execute(text(
                 "INSERT INTO ml_runs (id, algorithm, parameters, cell_size_m, sample_filter, scaler_name, "
                 "random_state, n_samples, n_clusters, noise_fraction, metrics, is_published) VALUES "
-                "(:id, :algorithm, '{}'::jsonb, 250, 'all', 'standard', 1, 1, 0, 1, '{}'::jsonb, :published)"
-            ), {"id": run_id, "algorithm": algorithm, "published": published})
+                "(:id, :algorithm, CAST(:parameters AS jsonb), 250, 'all', 'standard', "
+                "1, 1, 0, 1, '{}'::jsonb, :published)"
+            ), {"id": run_id, "algorithm": algorithm,
+                "published": published, "parameters": parameters})
             connection.execute(text(
                 "INSERT INTO cluster_assignments (run_id, cell_id, cluster_label) VALUES (:run, :cell, :label)"
             ), {"run": run_id, "cell": CELL_ID, "label": label})
@@ -79,9 +84,13 @@ def test_analyze_location_uses_only_published_assignments_and_keeps_noise(db, db
     response = db_client.post("/api/analyze-location", json=request_payload())
     assert response.status_code == 200, response.text
     result = response.json()
-    assert result["clustering"] == [{
-        "run_id": "SYNTHETIC-hdbscan-published", "algorithm": "hdbscan", "cluster_label": -1, "is_noise": True,
-    }]
+    assert result["clustering"] == [
+        {"run_id": "SYNTHETIC-kmeans-six", "algorithm": "kmeans",
+         "cluster_label": 0, "is_noise": False},
+        {"run_id": "SYNTHETIC-hdbscan-published", "algorithm": "hdbscan",
+         "cluster_label": -1, "is_noise": True},
+    ]
+    assert db_client.get("/api/ml/runs/SYNTHETIC-kmeans-nine").status_code == 200
     assert result["assessment"]["accessibility_class"] == "medium"
     assert "no_published_model" not in result["warnings"]
     assert "no_assessment" not in result["warnings"]

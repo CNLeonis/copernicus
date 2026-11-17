@@ -85,9 +85,10 @@ def _assignments(connection: Connection, cell_id: str, cell_size_m: int) -> list
         "(a.cluster_label = -1) AS is_noise "
         "FROM cluster_assignments a JOIN ml_runs r ON r.id = a.run_id "
         "WHERE a.cell_id = :cell AND r.cell_size_m = :size AND r.is_published "
-        "ORDER BY CASE WHEN r.parameters->>'feature_set' = 'counts_six' "
-        "AND r.algorithm = 'kmeans' AND r.parameters->>'n_clusters' = '2' "
-        "THEN 0 ELSE 1 END, r.id"
+        "AND r.sample_filter = 'all' AND (r.algorithm = 'hdbscan' OR "
+        "(r.algorithm = 'kmeans' AND r.parameters->>'feature_set' = 'counts_six' "
+        "AND r.parameters->>'n_clusters' = '2')) "
+        "ORDER BY CASE WHEN r.algorithm = 'kmeans' THEN 0 ELSE 1 END, r.id"
     ), {"cell": cell_id, "size": cell_size_m}).mappings().all()
     return [dict(row) for row in rows]
 
