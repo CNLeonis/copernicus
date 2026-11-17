@@ -5,7 +5,7 @@ from shapely import MultiPolygon, Point, box
 from sqlalchemy import text
 
 from pipeline import grid, import_osm
-from pipeline.grid import build_cells, cell_id, choose_point, grid_origin, grid_version, summarize
+from pipeline.grid import build_cells, cell_id, choose_point, grid_origin, summarize
 
 X0, Y0 = 500_000, 300_000
 # 1000 m x 520 m: with 250 m cells the top row is 20 m high (8% of a cell) -> slivers
@@ -17,9 +17,7 @@ def cells_by_key(cells):
 
 
 def test_ids_are_stable_and_readable():
-    version = grid_version(250, "osm-2026-10-27T13:49:01Z")
-    assert version == "g250-osm20261027T134901Z"
-    assert cell_id(version, 3, 12) == "g250-osm20261027T134901Z-c003-r012"
+    assert cell_id(250, 3, 12) == "g250-c003-r012"
 
 
 def test_origin_is_aligned_so_grids_nest():
@@ -27,7 +25,7 @@ def test_origin_is_aligned_so_grids_nest():
 
 
 def test_cells_cover_city_and_mark_slivers():
-    cells = build_cells(CITY, 250, {}, "g250-test")
+    cells = build_cells(CITY, 250, {})
     assert len(cells) == 4 * 3
     assert sum(c["area_m2"] for c in cells) == pytest.approx(CITY.area)
     assert all(c["full_geometry"].area == pytest.approx(62_500) for c in cells)
@@ -37,8 +35,8 @@ def test_cells_cover_city_and_mark_slivers():
 
 
 def test_250_m_cells_nest_inside_500_m_cells():
-    small = cells_by_key(build_cells(CITY, 250, {}, "a"))
-    large = cells_by_key(build_cells(CITY, 500, {}, "b"))
+    small = cells_by_key(build_cells(CITY, 250, {}))
+    large = cells_by_key(build_cells(CITY, 500, {}))
     for (col, row), cell in small.items():
         assert large[(col // 2, row // 2)]["full_geometry"].covers(cell["full_geometry"])
 
@@ -46,7 +44,7 @@ def test_250_m_cells_nest_inside_500_m_cells():
 def test_centroid_outside_concave_cell_falls_back_to_representative_point():
     # U-shaped fragment: the centroid of the cell lies in the cut-out
     city = MultiPolygon([box(X0, Y0, X0 + 250, Y0 + 250).difference(box(X0 + 50, Y0 + 50, X0 + 200, Y0 + 250))])
-    (cell,) = build_cells(city, 250, {}, "t")
+    (cell,) = build_cells(city, 250, {})
     assert cell["representative_point_method"] == "representative_point"
     assert cell["geometry"].contains(cell["representative_point"])
 
@@ -54,7 +52,7 @@ def test_centroid_outside_concave_cell_falls_back_to_representative_point():
 def test_point_avoids_water_and_reports_cells_fully_covered():
     water = box(X0 + 50, Y0, X0 + 200, Y0 + 250)  # river through the middle of cell (0, 0)
     lake = box(X0 + 250, Y0, X0 + 500, Y0 + 250)  # covers cell (1, 0) entirely
-    cells = cells_by_key(build_cells(CITY, 250, {"water": [water, lake]}, "t"))
+    cells = cells_by_key(build_cells(CITY, 250, {"water": [water, lake]}))
     river_cell, lake_cell = cells[(0, 0)], cells[(1, 0)]
     assert river_cell["representative_point_method"] == "representative_point"
     assert river_cell["point_land_cover"] == "ok"
@@ -81,7 +79,7 @@ def test_buildings_are_counted_once_and_residential_area_is_clipped():
     outside_city = box(X0 - 100, Y0 + 10, X0 - 90, Y0 + 20)
     residential = box(X0 + 200, Y0 + 200, X0 + 300, Y0 + 300)  # 50x50 in each of four cells
     cells = cells_by_key(build_cells(CITY, 250, {
-        "building": [across_edge, inside, outside_city], "residential": [residential, residential]}, "t"))
+        "building": [across_edge, inside, outside_city], "residential": [residential, residential]}))
     assert sum(c["building_count"] for c in cells.values()) == 2
     assert cells[(0, 0)]["building_count"] == 1
     assert cells[(0, 0)]["residential_area_m2"] == pytest.approx(2_500)  # overlap is not double-counted
@@ -90,7 +88,7 @@ def test_buildings_are_counted_once_and_residential_area_is_clipped():
 
 
 def test_summary_counts_cells_and_evidence():
-    cells = build_cells(CITY, 250, {"residential": [box(X0, Y0, X0 + 10, Y0 + 10)]}, "t")
+    cells = build_cells(CITY, 250, {"residential": [box(X0, Y0, X0 + 10, Y0 + 10)]})
     summary = summarize(cells, CITY)
     assert summary["cells"] == 12
     assert summary["analysis_status"] == {"included": 8, "excluded_sliver": 4}
@@ -100,22 +98,21 @@ def test_summary_counts_cells_and_evidence():
 
 @pytest.mark.db
 def test_run_writes_grids_once_in_metric_crs(db, monkeypatch):
-    monkeypatch.setattr(import_osm, "DATA_VERSION", "SYNTHETIC-grid")
-    import_osm.write_import(db, {"downloaded_at": "2026-01-01T00:00:00+00:00"}, {"id": 1, "tags": {"name": "SYNTHETIC"}}, CITY,
+    import_osm.write_import(db, {"id": 1, "tags": {"name": "SYNTHETIC"}}, CITY,
                             [{"source_type": "node", "source_id": 1, "name": None, "category": "shop",
-                              "subcategory": "bakery", "geometry": Point(X0 + 5, Y0 + 5), "source_tags": {},
+                              "subcategory": "bakery", "geometry": Point(X0 + 5, Y0 + 5),
                               "inside_city": True}],
                             [{"source_type": "way", "source_id": 1, "kind": "building",
                               "geometry": box(X0 + 10, Y0 + 10, X0 + 20, Y0 + 20)}], replace=False)
     monkeypatch.setattr(grid, "get_engine", lambda: db)
 
-    first = grid.run([250, 500], "SYNTHETIC-grid")
+    first = grid.run([250, 500])
     assert [r["written"] for r in first] == [True, True]
-    assert [r["written"] for r in grid.run([250], "SYNTHETIC-grid")] == [False]
-    assert grid.run([250], "SYNTHETIC-grid", replace=True)[0]["written"]
+    assert [r["written"] for r in grid.run([250])] == [False]
+    assert grid.run([250], replace=True)[0]["written"]
     with db.connect() as c:
         rows = c.execute(text(
-            "SELECT g.cell_size_m, count(*), sum(a.building_count), min(ST_SRID(a.representative_point)), "
-            "round(sum(ST_Area(a.geometry))) FROM analysis_cells a JOIN grid_versions g USING (grid_version) "
-            "GROUP BY g.cell_size_m ORDER BY g.cell_size_m")).all()
+            "SELECT a.cell_size_m, count(*), sum(a.building_count), min(ST_SRID(a.representative_point)), "
+            "round(sum(ST_Area(a.geometry))) FROM analysis_cells a "
+            "GROUP BY a.cell_size_m ORDER BY a.cell_size_m")).all()
     assert [tuple(r) for r in rows] == [(250, 12, 1, 2180, 520_000), (500, 4, 1, 2180, 520_000)]

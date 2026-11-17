@@ -9,6 +9,7 @@ __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
+!/backend/tests/conftest.py
 
 # Node
 node_modules/

@@ -9,7 +9,6 @@ from pipeline.ml import (
     build_experiment_specs,
     cluster_metrics,
     cluster_statistics,
-    feature_diagnostics,
     feature_matrix,
     run,
     run_id,
@@ -50,6 +49,18 @@ def test_select_complete_rows_excludes_slivers_and_missing_values_without_imputa
     }
 
 
+def test_six_counts_keep_cells_without_nearest_distance():
+    rows = [sample_row(f"cell-{index}", index) for index in range(4)]
+    rows[0]["nearest_school_m"] = None
+    rows[1]["schools_500m"] = None
+
+    complete, counts = select_complete_rows(rows, "all", FEATURE_COLUMNS[3:])
+
+    assert [row["cell_id"] for row in complete] == ["cell-0", "cell-2", "cell-3"]
+    assert counts["missing_feature_excluded"] == 1
+    assert feature_matrix(complete, FEATURE_COLUMNS[3:]).shape == (3, 6)
+
+
 def test_non_finite_values_are_excluded_and_negative_values_fail():
     rows = [sample_row(f"cell-{index}", index) for index in range(4)]
     rows[0]["shops_500m"] = float("nan")
@@ -68,30 +79,18 @@ def test_feature_matrix_log_transforms_counts_but_not_distances():
 
     assert matrix[0, 0] == 4.0
     assert matrix[0, 3] == pytest.approx(np.log1p(4.0))
-    assert np.isfinite(scale_matrix(np.vstack([matrix, matrix + 1]), "robust")).all()
+    assert np.isfinite(scale_matrix(np.vstack([matrix, matrix + 1]))).all()
 
 
-def test_feature_diagnostics_flags_outliers_without_removing_observations():
-    matrix = np.ones((5, len(FEATURE_COLUMNS)), dtype=float)
-    matrix[-1, 0] = 100.0
-
-    report = feature_diagnostics(matrix)
-
-    assert report["features"]["nearest_shop_m"]["outlier_count"] == 1
-    assert "no rows removed" in report["rule"]
-
-
-def test_experiment_matrix_covers_kmeans_k2_to_k8_and_hdbscan_parameter_grid():
+def test_experiment_specs_cover_kmeans_k2_to_k8_and_one_hdbscan_run():
     specs = build_experiment_specs("all")
     kmeans = [spec for spec in specs if spec["algorithm"] == "kmeans"]
     hdbscan = [spec for spec in specs if spec["algorithm"] == "hdbscan"]
 
-    assert len(kmeans) == 14
+    assert len(kmeans) == 7
     assert {spec["parameters"]["n_clusters"] for spec in kmeans} == set(range(2, 9))
-    assert len(hdbscan) == 12
-    assert {spec["parameters"]["min_cluster_size"] for spec in hdbscan} == {15, 30, 60}
-    assert {spec["parameters"]["min_samples"] for spec in hdbscan} == {5, 15}
-    assert all(spec["notes"]["min_samples_convention"] == "includes_the_point_itself" for spec in hdbscan)
+    assert len(hdbscan) == 1
+    assert hdbscan[0]["parameters"] == {"min_cluster_size": 30, "min_samples": 10}
 
 
 def test_metrics_handle_hdbscan_noise_and_undefined_single_cluster():
@@ -117,69 +116,44 @@ def test_cluster_statistics_keep_noise_and_describe_original_features():
     assert sum(row["sample_share"] for row in stats) == pytest.approx(1.0)
 
 
-def test_run_ids_are_stable_and_bind_the_feature_version():
+def test_run_ids_are_stable_for_grid_and_configuration():
     config = {"algorithm": "kmeans", "parameters": {"n_clusters": 2}}
-    libraries = {"scikit-learn": "test"}
 
-    assert run_id("features-a", config, libraries) == run_id("features-a", config, libraries)
-    assert run_id("features-a", config, libraries) != run_id("features-b", config, libraries)
+    assert run_id(250, config) == run_id(250, config)
+    assert run_id(250, config) != run_id(500, config)
 
 
 def seed_ml_dataset(db):
     with db.begin() as connection:
-        import_id = connection.execute(text(
-            "INSERT INTO data_imports (source_name, source_url, downloaded_at, data_version, license_info, "
-            "record_count, import_status) VALUES ('SYNTHETIC', 'synthetic://ml', now(), 'SYNTHETIC-ml-v1', "
-            "'SYNTHETIC', 12, 'completed') RETURNING id"
-        )).scalar_one()
-        boundary_id = connection.execute(text(
-            "INSERT INTO city_boundary (import_id, name, source_type, source_id, geometry) VALUES "
-            "(:import, 'SYNTHETIC Opole', 'relation', 987, "
-            "ST_Multi(ST_Buffer(ST_Transform(ST_SetSRID(ST_MakePoint(17.92, 50.67), 4326), 2180), 5000))) "
-            "RETURNING id"
-        ), {"import": import_id}).scalar_one()
-        grid_version = "g250-SYNTHETIC-ml-v1"
-        feature_version = "f-SYNTHETIC-ml-v1"
-        connection.execute(text(
-            "INSERT INTO grid_versions (grid_version, boundary_id, cell_size_m, origin_x, origin_y, crs) "
-            "VALUES (:grid, :boundary, 250, 0, 0, 'EPSG:2180')"
-        ), {"grid": grid_version, "boundary": boundary_id})
-        connection.execute(text(
-            "INSERT INTO feature_versions (feature_version, grid_version, import_id, distance_method) "
-            "VALUES (:feature, :grid, :import, 'euclidean')"
-        ), {"feature": feature_version, "grid": grid_version, "import": import_id})
-
         for index in range(12):
-            cell_id = f"{grid_version}-c{index:03d}-r000"
+            cell_id = f"g250-c{index:03d}-r000"
             x = 400000 + index * 250
             connection.execute(text(
-                "INSERT INTO analysis_cells (id, grid_version, col, row, geometry, full_geometry, "
+                "INSERT INTO analysis_cells (id, cell_size_m, col, row, geometry, full_geometry, "
                 "representative_point, representative_point_method, point_land_cover, area_m2, building_count, "
                 "residential_area_m2, land_use_status, analysis_status) VALUES "
-                "(:id, :grid, :col, 0, ST_Multi(ST_MakeEnvelope(:x, 560000, :x + 250, 560250, 2180)), "
+                "(:id, 250, :col, 0, ST_Multi(ST_MakeEnvelope(:x, 560000, :x + 250, 560250, 2180)), "
                 "ST_MakeEnvelope(:x, 560000, :x + 250, 560250, 2180), ST_SetSRID(ST_MakePoint(:x + 125, "
                 "560125), 2180), 'centroid', 'ok', 62500, 1, 62500, 'potentially_residential', 'included')"
-            ), {"id": cell_id, "grid": grid_version, "col": index, "x": x})
+            ), {"id": cell_id, "col": index, "x": x})
             values = [float(index % 2 * 100 + feature_index + 1) for feature_index in range(9)]
             columns = ", ".join(FEATURE_COLUMNS)
             placeholders = ", ".join(f":v{i}" for i in range(9))
             connection.execute(text(
-                "INSERT INTO cell_features (cell_id, feature_version, " + columns +
+                "INSERT INTO cell_features (cell_id, " + columns +
                 ", shop_status, school_status, bus_stop_status, buffer_sufficient) VALUES "
-                "(:cell, :feature, " + placeholders + ", 'ok', 'ok', 'ok', true)"
-            ), {"cell": cell_id, "feature": feature_version,
+                "(:cell, " + placeholders + ", 'ok', 'ok', 'ok', true)"
+            ), {"cell": cell_id,
                 **{f"v{i}": value for i, value in enumerate(values)}})
-    return grid_version, feature_version
+    return 250
 
 
 @pytest.mark.db
-def test_pipeline_persists_versioned_run_assignments_and_is_idempotent(db):
-    grid_version, feature_version = seed_ml_dataset(db)
+def test_pipeline_persists_run_assignments_and_is_idempotent(db):
+    cell_size_m = seed_ml_dataset(db)
     kwargs = {
-        "grid_version": grid_version,
-        "feature_version": feature_version,
+        "cell_size_m": cell_size_m,
         "algorithm": "kmeans",
-        "scalers": ("standard",),
         "k_values": (2,),
         "engine": db,
     }
@@ -193,8 +167,7 @@ def test_pipeline_persists_versioned_run_assignments_and_is_idempotent(db):
     assert first["runs"][0]["n_samples"] == 12
     with db.connect() as connection:
         run_row = connection.execute(text(
-            "SELECT feature_version, grid_version, algorithm, random_state, n_samples, is_published, "
-            "parameters->'validation_diagnostics' AS diagnostics "
+            "SELECT cell_size_m, algorithm, random_state, n_samples, is_published, parameters "
             "FROM ml_runs WHERE id = :id"
         ), {"id": first["runs"][0]["id"]}).mappings().one()
         assignment_count = connection.execute(text(
@@ -204,12 +177,12 @@ def test_pipeline_persists_versioned_run_assignments_and_is_idempotent(db):
             "SELECT sum(cell_count), sum(sample_share) FROM cluster_statistics WHERE run_id = :id"
         ), {"id": first["runs"][0]["id"]}).one()
 
-    assert run_row["feature_version"] == feature_version
-    assert run_row["grid_version"] == grid_version
+    assert run_row["cell_size_m"] == cell_size_m
     assert run_row["algorithm"] == "kmeans"
     assert run_row["random_state"] == 42
-    assert run_row["is_published"] is False
-    assert run_row["diagnostics"]["rule"].startswith("Tukey 1.5*IQR")
+    assert run_row["is_published"] is True
+    assert run_row["parameters"]["n_clusters"] == 2
+    assert run_row["parameters"]["feature_set"] == "counts_six"
     assert assignment_count == 12
     assert stats[0] == 12
     assert stats[1] == pytest.approx(1.0)
@@ -217,18 +190,16 @@ def test_pipeline_persists_versioned_run_assignments_and_is_idempotent(db):
 
 @pytest.mark.db
 def test_pipeline_counts_cells_without_feature_rows_as_missing(db):
-    grid_version, feature_version = seed_ml_dataset(db)
+    cell_size_m = seed_ml_dataset(db)
     with db.begin() as connection:
         connection.execute(text(
             "DELETE FROM cell_features WHERE cell_id = ("
-            "SELECT id FROM analysis_cells WHERE grid_version = :grid ORDER BY id LIMIT 1)"
-        ), {"grid": grid_version})
+            "SELECT id FROM analysis_cells WHERE cell_size_m = :size ORDER BY id LIMIT 1)"
+        ), {"size": cell_size_m})
 
     result = run(
-        grid_version=grid_version,
-        feature_version=feature_version,
+        cell_size_m=cell_size_m,
         algorithm="kmeans",
-        scalers=("standard",),
         k_values=(2,),
         engine=db,
     )
@@ -236,3 +207,23 @@ def test_pipeline_counts_cells_without_feature_rows_as_missing(db):
     assert result["sample_counts"]["grid_cells"] == 12
     assert result["sample_counts"]["missing_feature_excluded"] == 1
     assert result["sample_counts"]["n_samples"] == 11
+
+
+@pytest.mark.db
+def test_six_count_default_keeps_legacy_run_and_more_cells(db):
+    size = seed_ml_dataset(db)
+    with db.begin() as connection:
+        connection.execute(text(
+            "UPDATE cell_features SET nearest_school_m = NULL "
+            "WHERE cell_id = (SELECT id FROM analysis_cells ORDER BY id LIMIT 1)"
+        ))
+
+    legacy = run(cell_size_m=size, algorithm="kmeans", k_values=(2,),
+                 feature_set="all_nine", engine=db)["runs"][0]
+    default = run(cell_size_m=size, engine=db)["runs"][0]
+
+    assert legacy["n_samples"] == 11
+    assert default["n_samples"] == 12
+    assert legacy["id"] != default["id"]
+    with db.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM ml_runs")).scalar_one() == 2
