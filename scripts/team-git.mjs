@@ -32,11 +32,9 @@ function usage() {
   console.log(`Użycie:
   node scripts/team-git.mjs sync backend|frontend
   node scripts/team-git.mjs publish backend|frontend [-m "Opis commita"]
-  node scripts/team-git.mjs publish backend --include-api-doc [-m "Opis commita"]
 
 sync: pobiera origin/main i scala go z bieżącą, czystą gałęzią. Nie wysyła zmian.
-publish: dodaje pliki tylko z katalogu swojej roli, tworzy commit i wysyła gałąź.
---include-api-doc: pozwala backendowi dodać docs/api.md po uzgodnieniu kontraktu.`)
+publish: dodaje pliki tylko z katalogu swojej roli, tworzy commit i wysyła gałąź.`)
 }
 
 function parseArgs(args) {
@@ -47,20 +45,17 @@ function parseArgs(args) {
   }
 
   let message = null
-  let includeApiDoc = false
   for (let i = 0; i < options.length; i += 1) {
     const option = options[i]
     if (action === 'publish' && (option === '-m' || option === '--message')) {
       message = options[++i]
       if (!message?.trim()) throw new Error('Podaj niepustą treść po -m.')
-    } else if (action === 'publish' && area === 'backend' && option === '--include-api-doc') {
-      includeApiDoc = true
     } else {
       throw new Error(`Nieznany argument: ${option}`)
     }
   }
 
-  return { action, area, message, includeApiDoc }
+  return { action, area, message }
 }
 
 function assertBranch(area) {
@@ -97,13 +92,13 @@ function changedPaths() {
   return paths
 }
 
-function isAllowed(file, area, includeApiDoc) {
-  return file.startsWith(`${area}/`) || (area === 'backend' && includeApiDoc && file === 'docs/api.md')
+function isAllowed(file, area) {
+  return file.startsWith(`${area}/`)
 }
 
-async function publish(area, suppliedMessage, includeApiDoc) {
+async function publish(area, suppliedMessage) {
   const changed = changedPaths()
-  const forbidden = changed.filter((file) => !isAllowed(file, area, includeApiDoc))
+  const forbidden = changed.filter((file) => !isAllowed(file, area))
   if (forbidden.length) {
     throw new Error(`Zmiany poza zakresem ${area}:\n${forbidden.join('\n')}\nNie dodano ani nie wysłano plików.`)
   }
@@ -121,9 +116,9 @@ async function publish(area, suppliedMessage, includeApiDoc) {
   }
 
   if (changed.length) {
-    git(['add', '--', `${area}/`, ...(includeApiDoc ? ['docs/api.md'] : [])], { inherit: true })
+    git(['add', '--', `${area}/`], { inherit: true })
     const staged = git(['diff', '--cached', '--name-only', '-z']).stdout.split('\0').filter(Boolean)
-    const unexpected = staged.filter((file) => !isAllowed(file, area, includeApiDoc))
+    const unexpected = staged.filter((file) => !isAllowed(file, area))
     if (unexpected.length) throw new Error(`Wstrzymano commit: pliki poza zakresem:\n${unexpected.join('\n')}`)
     if (staged.length) {
       console.log(`Pliki w commicie:\n${staged.join('\n')}`)
@@ -157,11 +152,11 @@ try {
   if (process.argv.includes('--help') || process.argv.includes('-h')) {
     usage()
   } else {
-    const { action, area, message, includeApiDoc } = parseArgs(process.argv.slice(2))
+    const { action, area, message } = parseArgs(process.argv.slice(2))
     assertBranch(area)
     assertNoOperationInProgress()
     if (action === 'sync') sync(area)
-    else await publish(area, message, includeApiDoc)
+    else await publish(area, message)
   }
 } catch (error) {
   console.error(`Błąd: ${error.message}`)
