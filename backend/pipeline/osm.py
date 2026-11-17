@@ -8,32 +8,19 @@ Overpass usage policy (https://wiki.openstreetmap.org/wiki/Overpass_API).
 import hashlib
 import json
 import time
-from datetime import datetime, timezone
 
 import requests
 import shapely
-from pyproj import Transformer
 from shapely import LineString, MultiPolygon, Polygon
 from shapely.ops import polygonize, unary_union
 
-from app.core.config import METRIC_CRS, WGS84, get_settings
+from app.core.config import get_settings
+from pipeline.geo import to_metric, to_wgs84
 
 USER_AGENT = "copernicus-opole-academic-project/0.1 (+https://github.com/CNLeonis/copernicus)"
 PAUSE_AFTER_REQUEST_S = 5
 RETRY_STATUSES = {429, 502, 503, 504}
 RETRY_WAITS_S = (30, 60, 120)
-
-_TO_METRIC = Transformer.from_crs(WGS84, METRIC_CRS, always_xy=True).transform
-_TO_WGS84 = Transformer.from_crs(METRIC_CRS, WGS84, always_xy=True).transform
-
-
-def to_metric(geometry):
-    return shapely.transform(geometry, lambda x, y: _TO_METRIC(x, y), interleaved=False)
-
-
-def to_wgs84(geometry):
-    return shapely.transform(geometry, lambda x, y: _TO_WGS84(x, y), interleaved=False)
-
 
 def overpass(query: str, *, cache_name: str, refresh: bool = False) -> dict:
     settings = get_settings()
@@ -42,7 +29,13 @@ def overpass(query: str, *, cache_name: str, refresh: bool = False) -> dict:
     digest = hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
     path = raw_dir / f"{cache_name}_{digest}.json"
     if path.exists() and not refresh:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        has_metadata = "_download" in payload or "osm3s" in payload
+        payload.pop("_download", None)
+        payload.pop("osm3s", None)
+        if has_metadata:
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return payload
 
     for wait in (*RETRY_WAITS_S, None):
         response = requests.post(
@@ -60,11 +53,8 @@ def overpass(query: str, *, cache_name: str, refresh: bool = False) -> dict:
     payload = response.json()
     if payload.get("remark"):
         raise RuntimeError(f"Overpass zwrócił uwagę (niepełny wynik?): {payload['remark']}")
-    payload["_download"] = {
-        "downloaded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "source_url": settings.overpass_url,
-        "query": query,
-    }
+    payload.pop("_download", None)
+    payload.pop("osm3s", None)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     time.sleep(PAUSE_AFTER_REQUEST_S)
     return payload

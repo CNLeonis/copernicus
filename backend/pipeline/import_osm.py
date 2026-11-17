@@ -1,15 +1,12 @@
-"""Import OSM data for Opole into PostGIS, pinned to a fixed OSM state.
+"""Import OSM data for Opole into PostGIS.
 
 Usage:
     python -m pipeline.import_osm [--refresh] [--replace]
 
-All Overpass queries use the attic header [date:"OSM_DATE"], so every team member
-downloads exactly the same objects. Import rules follow the team decisions of
-2026-10-27 described in docs/data_sources.md.
+Category rules are defined below and verified by pipeline tests.
 """
 
 import argparse
-import hashlib
 import json
 import re
 from collections import Counter, defaultdict
@@ -18,18 +15,15 @@ import shapely
 from shapely import MultiPolygon, Point, Polygon, STRtree
 from sqlalchemy import Engine, text
 
-from app.core.config import BOUNDARY_BUFFER_M, METRIC_CRS, METRIC_SRID, OSM_ATTRIBUTION, get_settings
+from app.core.config import BOUNDARY_BUFFER_M, METRIC_SRID
 from app.database import get_engine
-from pipeline.osm import element_point, overpass, relation_to_multipolygon, to_metric, to_wgs84
-from pipeline.osm_audit import SCHOOL_NAME_PATTERNS
+from pipeline.geo import to_metric, to_wgs84
+from pipeline.osm import element_point, overpass, relation_to_multipolygon
 
-OSM_DATE = "2026-10-27T13:49:01Z"  # osm_base of the audit run; attic queries return this exact state
-DATA_VERSION = f"osm-{OSM_DATE}"
 RELATION_ID = 2730708  # gmina miejska Opole, TERYT 1661011
-SOURCE_NAME = "OpenStreetMap (Overpass API)"
 
 GROCERY_SHOPS = ("supermarket", "convenience", "grocery", "greengrocer", "bakery", "butcher", "pastry")
-PRIMARY_SCHOOL_NAME = SCHOOL_NAME_PATTERNS["szkoła podstawowa"]
+PRIMARY_SCHOOL_NAME = re.compile(r"szko[łl]a\s+podstawowa|\bSP\s*(nr|\d)|publiczna\s+szko[łl]a\s+podst", re.I)
 LANGUAGE_SCHOOL_NAME = re.compile(r"\blanguage\b|j[ęe]zyk[óo]w\s+obcych|szko[łl]a\s+j[ęe]zykow", re.I)
 SCHOOL_PAIR_REPORT_DISTANCE_M = 150
 
@@ -42,7 +36,7 @@ LAND_COVER_FILTERS = {
 
 
 def header(timeout: int = 600) -> str:
-    return f'[out:json][timeout:{timeout}][date:"{OSM_DATE}"]'
+    return f"[out:json][timeout:{timeout}]"
 
 
 def bbox_filter(geometry_wgs84) -> str:
@@ -85,12 +79,31 @@ def classify_stop(tags: dict) -> str | None:
     if tags.get("highway") != "bus_stop" and tags.get("public_transport") != "platform":
         return None
     if tags.get("railway") == "platform" or tags.get("train") == "yes":
-        return "rail_platform"
+        return None
     return "bus_tram_stop"
 
 
 def normalize_name(name: str | None) -> str | None:
     return " ".join(name.casefold().split()) if name else None
+
+
+def merge_stop_representations(records: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Keep the OSM node when a nearby way describes the same coded stop."""
+    nodes = [r for r in records if r["category"] == "bus_stop" and r["source_type"] == "node"]
+    dropped, merges = set(), []
+    for record in records:
+        if record["category"] != "bus_stop" or record["source_type"] != "way":
+            continue
+        name = normalize_name(record["name"])
+        if not name or not re.search(r"\(\d+\)$", name):
+            continue
+        match = next((node for node in nodes if normalize_name(node["name"]) == name
+                      and node["geometry"].distance(record["geometry"]) <= 10), None)
+        if match is not None:
+            dropped.add(id(record))
+            merges.append({"kept": f"node/{match['source_id']}",
+                           "dropped": f"way/{record['source_id']}", "name": record["name"]})
+    return [r for r in records if id(r) not in dropped], merges
 
 
 def merge_school_representations(schools: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -170,7 +183,6 @@ def service_record(element: dict, category: str, subcategory: str, geometry: Poi
         "category": category,
         "subcategory": subcategory,
         "geometry": geometry,
-        "source_tags": tags,
         "inside_city": bool(city.covers(geometry)),
     }
 
@@ -227,6 +239,8 @@ def build_services(service_data: dict, school_data: dict, city, buffer) -> tuple
                 continue
             records.append(service_record(element, category, subcategory, geometry, city))
 
+    records, report["stop_merges"] = merge_stop_representations(records)
+
     report["raw_elements"]["schools"] = len(school_data["elements"])
     schools = []
     for element in school_data["elements"]:
@@ -267,8 +281,6 @@ def build_services(service_data: dict, school_data: dict, city, buffer) -> tuple
     report["missing_name"] = dict(Counter(r["category"] for r in records if not r["name"]))
     report["dropped_outside_buffer"] = dict(report["dropped_outside_buffer"])
     report["without_geometry"] = dict(report["without_geometry"])
-    report["checksum_sha256"] = identity_checksum(
-        f"{r['category']}|{r['subcategory']}|{r['source_type']}/{r['source_id']}|{int(r['inside_city'])}" for r in records)
     return records, report
 
 
@@ -288,61 +300,52 @@ def build_land_cover(kind: str, data: dict, city) -> tuple[list[dict], dict]:
             continue
         records.append({"source_type": element["type"], "source_id": element["id"], "kind": kind, "geometry": polygon})
     stats["stored"] = len(records)
-    return records, {**dict(stats), "checksum_sha256": identity_checksum(
-        f"{r['source_type']}/{r['source_id']}" for r in records)}
-
-
-def identity_checksum(lines) -> str:
-    return hashlib.sha256("\n".join(sorted(lines)).encode("utf-8")).hexdigest()
+    return records, dict(stats)
 
 
 # --- database -----------------------------------------------------------------------------
 
-def write_import(engine: Engine, report: dict, relation: dict, city, services: list[dict],
-                 land_cover: list[dict], replace: bool) -> int | None:
+def write_import(engine: Engine, relation: dict, city, services: list[dict],
+                 land_cover: list[dict], replace: bool = False) -> bool:
+    """Store one current OSM snapshot; a failed transaction leaves old data intact."""
+    if city.is_empty or not city.is_valid or city.geom_type != "MultiPolygon":
+        raise ValueError("Granica miasta musi być poprawnym MultiPolygon.")
+    if not services:
+        raise ValueError("Import nie zawiera żadnych usług; zachowano poprzednie dane.")
     with engine.begin() as connection:
-        existing = connection.execute(
-            text("SELECT id FROM data_imports WHERE data_version = :v"), {"v": DATA_VERSION}).scalar()
+        existing = connection.execute(text("SELECT 1 FROM city_boundary LIMIT 1")).scalar()
         if existing and not replace:
-            return None
+            return False
         if existing:
-            connection.execute(text("DELETE FROM data_imports WHERE id = :id"), {"id": existing})
-
-        import_id = connection.execute(text(
-            "INSERT INTO data_imports (source_name, source_url, downloaded_at, data_version, license_info, "
-            "record_count, import_status, validation_report) VALUES (:name, :url, :downloaded_at, :version, "
-            ":license, :count, 'completed', CAST(:report AS jsonb)) RETURNING id"
-        ), {
-            "name": SOURCE_NAME, "url": get_settings().overpass_url, "downloaded_at": report["downloaded_at"],
-            "version": DATA_VERSION, "license": OSM_ATTRIBUTION, "count": 1 + len(services) + len(land_cover),
-            "report": json.dumps(report, ensure_ascii=False),
-        }).scalar_one()
+            connection.execute(text(
+                "TRUNCATE accessibility_results, cluster_statistics, cluster_assignments, ml_runs, "
+                "cell_features, analysis_cells, land_cover, services, city_boundary RESTART IDENTITY CASCADE"
+            ))
 
         connection.execute(text(
-            "INSERT INTO city_boundary (import_id, name, source_type, source_id, geometry) "
-            "VALUES (:import_id, :name, 'relation', :source_id, ST_Multi(ST_GeomFromWKB(:wkb, :srid)))"
-        ), {"import_id": import_id, "name": relation["tags"].get("name"), "source_id": relation["id"],
-            "wkb": city.wkb, "srid": METRIC_SRID})
+            "INSERT INTO city_boundary (id, name, geometry) "
+            "VALUES (1, :name, ST_Multi(ST_GeomFromWKB(:wkb, :srid)))"
+        ), {"name": relation.get("tags", {}).get("name") or "Opole", "wkb": city.wkb,
+            "srid": METRIC_SRID})
 
         connection.execute(text(
-            "INSERT INTO services (import_id, source_type, source_id, name, category, subcategory, geometry, "
-            "source_tags, inside_city) VALUES (:import_id, :source_type, :source_id, :name, :category, "
-            ":subcategory, ST_GeomFromWKB(:wkb, :srid), CAST(:tags AS jsonb), :inside_city)"
-        ), [{**{k: s[k] for k in ("source_type", "source_id", "name", "category", "subcategory", "inside_city")},
-             "import_id": import_id, "wkb": s["geometry"].wkb, "srid": METRIC_SRID,
-             "tags": json.dumps(s["source_tags"], ensure_ascii=False)} for s in services])
+            "INSERT INTO services (name, category, subcategory, geometry, inside_city) "
+            "VALUES (:name, :category, :subcategory, ST_GeomFromWKB(:wkb, :srid), :inside_city)"
+        ), [{"name": s["name"], "category": s["category"], "subcategory": s["subcategory"],
+             "inside_city": s["inside_city"], "wkb": s["geometry"].wkb, "srid": METRIC_SRID}
+            for s in services])
 
         if land_cover:
             connection.execute(text(
-                "INSERT INTO land_cover (import_id, source_type, source_id, kind, geometry) "
-                "VALUES (:import_id, :source_type, :source_id, :kind, ST_GeomFromWKB(:wkb, :srid))"
-            ), [{"import_id": import_id, "source_type": r["source_type"], "source_id": r["source_id"],
-                 "kind": r["kind"], "wkb": r["geometry"].wkb, "srid": METRIC_SRID} for r in land_cover])
-    return import_id
+                "INSERT INTO land_cover (kind, geometry) "
+                "VALUES (:kind, ST_GeomFromWKB(:wkb, :srid))"
+            ), [{"kind": r["kind"], "wkb": r["geometry"].wkb, "srid": METRIC_SRID}
+                for r in land_cover])
+    return True
 
 
 def run(refresh: bool = False, replace: bool = False) -> dict:
-    relation, city, boundary_data = fetch_boundary(refresh)
+    relation, city, _ = fetch_boundary(refresh)
     city_wgs84 = to_wgs84(city)
     buffer = city.buffer(BOUNDARY_BUFFER_M)
     buffer_wgs84 = to_wgs84(buffer)
@@ -352,52 +355,39 @@ def run(refresh: bool = False, replace: bool = False) -> dict:
     services, service_report = build_services(service_data, school_data, city, buffer)
 
     land_cover, land_report = [], {}
-    downloads = [boundary_data, service_data, school_data]
     for kind in LAND_COVER_FILTERS:
         data = fetch_land_cover(kind, city_wgs84, refresh)
-        downloads.append(data)
         records, land_report[kind] = build_land_cover(kind, data, city)
         land_cover.extend(records)
 
     report = {
-        "data_version": DATA_VERSION,
-        "osm_date": OSM_DATE,
-        "downloaded_at": min(d["_download"]["downloaded_at"] for d in downloads),
-        "crs": METRIC_CRS,
-        "buffer_m": BOUNDARY_BUFFER_M,
-        "boundary": {"relation_id": relation["id"], "area_km2": round(city.area / 1e6, 3), "valid": city.is_valid},
+        "boundary_area_km2": round(city.area / 1e6, 3),
         "services": service_report,
         "land_cover": land_report,
-        "queries": [d["_download"]["query"] for d in downloads],
     }
-    import_id = write_import(get_engine(), report, relation, city, services, land_cover, replace)
-    report["import_id"] = import_id
+    report["written"] = write_import(get_engine(), relation, city, services, land_cover, replace)
     return report
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--refresh", action="store_true", help="ignore the local cache and download again")
-    parser.add_argument("--replace", action="store_true", help="delete and re-create this data_version (cascades)")
+    parser.add_argument("--replace", action="store_true", help="replace the current OSM data and dependent analyses")
     args = parser.parse_args()
 
     report = run(args.refresh, args.replace)
-    if report["import_id"] is None:
-        print(f"Import {DATA_VERSION} już istnieje w bazie; pominięto (użyj --replace, aby odtworzyć).")
+    if not report["written"]:
+        print("Dane OSM już istnieją w bazie; pominięto (użyj --replace, aby odtworzyć).")
     else:
-        print(f"Zaimportowano {DATA_VERSION} (data_imports.id={report['import_id']}).")
+        print("Zaimportowano dane OSM.")
     summary = {
         "services": report["services"]["counts"],
-        "services_checksum_sha256": report["services"]["checksum_sha256"],
         "school_merges": len(report["services"]["school_merges"]),
         "language_schools_excluded": len(report["services"]["excluded"]["language_schools"]),
-        "land_cover": {k: {"stored": v["stored"], "checksum_sha256": v["checksum_sha256"]}
+        "land_cover": {k: {"stored": v["stored"]}
                        for k, v in report["land_cover"].items()},
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    reports_dir = get_settings().data_dir / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    (reports_dir / "import_osm_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

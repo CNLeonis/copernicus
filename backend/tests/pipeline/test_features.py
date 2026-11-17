@@ -95,25 +95,23 @@ def test_invalid_radius_fails_clearly():
 
 
 @pytest.mark.db
-def test_run_writes_versioned_features_once_and_can_replace(db, monkeypatch):
+def test_run_writes_features_once_and_can_replace(db, monkeypatch):
     origin_x, origin_y = 500_000, 300_000
     city = MultiPolygon([box(origin_x, origin_y, origin_x + 250, origin_y + 250)])
     representative = Point(origin_x + 125, origin_y + 125)
     services = [
         {"source_type": "node", "source_id": 1, "name": "SYNTHETIC shop", "category": "shop",
          "subcategory": "supermarket", "geometry": Point(origin_x + 225, origin_y + 125),
-         "source_tags": {"shop": "supermarket"}, "inside_city": True},
+         "inside_city": True},
         {"source_type": "node", "source_id": 2, "name": "SYNTHETIC school", "category": "school",
          "subcategory": "primary", "geometry": representative,
-         "source_tags": {"amenity": "school"}, "inside_city": True},
+         "inside_city": True},
         {"source_type": "node", "source_id": 3, "name": "SYNTHETIC stop", "category": "bus_stop",
          "subcategory": "bus_tram_stop", "geometry": Point(origin_x + 125, origin_y + 225),
-         "source_tags": {"highway": "bus_stop"}, "inside_city": True},
+         "inside_city": True},
     ]
-    monkeypatch.setattr(import_osm, "DATA_VERSION", "SYNTHETIC-features")
     import_osm.write_import(
         db,
-        {"downloaded_at": "2026-01-01T00:00:00+00:00", "buffer_m": 2000},
         {"id": 99, "tags": {"name": "SYNTHETIC"}},
         city,
         services,
@@ -121,7 +119,7 @@ def test_run_writes_versioned_features_once_and_can_replace(db, monkeypatch):
         replace=False,
     )
     monkeypatch.setattr(grid, "get_engine", lambda: db)
-    grid.run([250], "SYNTHETIC-features")
+    grid.run([250])
     monkeypatch.setattr(features, "get_engine", lambda: db)
 
     first = features.run()
@@ -134,10 +132,9 @@ def test_run_writes_versioned_features_once_and_can_replace(db, monkeypatch):
         row = connection.execute(text(
             "SELECT nearest_shop_m, nearest_school_m, nearest_bus_stop_m, shops_500m, shops_1000m, "
             "schools_500m, schools_1000m, bus_stops_500m, bus_stops_1000m, buffer_sufficient "
-            "FROM cell_features WHERE feature_version = :version"),
-            {"version": first["feature_version"]}).one()
+            "FROM cell_features")).one()
     assert tuple(row) == (100.0, 0.0, 100.0, 1, 1, 1, 1, 1, 1, True)
 
     replaced = features.run(replace=True)
     assert replaced["written"] is True
-    assert replaced["feature_version"] == first["feature_version"]
+    assert replaced["cell_size_m"] == first["cell_size_m"]

@@ -1,17 +1,15 @@
 """Build regular analysis grids for Opole in EPSG:2180.
 
 Usage:
-    python -m pipeline.grid [--size 250] [--size 500] [--data-version VERSION] [--replace]
+    python -m pipeline.grid [--size 250] [--size 500] [--replace]
 
 Squares are aligned to multiples of ORIGIN_ALIGNMENT_M, so 250 m cells nest exactly
 inside 500 m cells. Each cell keeps the full square and its part inside the city.
-Rules and working parameters are described in docs/data_sources.md.
+Working parameters are defined below.
 """
 
 import argparse
-import json
 import math
-import re
 from collections import Counter
 
 import numpy as np
@@ -19,9 +17,8 @@ import shapely
 from shapely import MultiPolygon, Point, Polygon, STRtree, box
 from sqlalchemy import Engine, text
 
-from app.core.config import GRID_SIZES_M, METRIC_CRS, METRIC_SRID, get_settings
+from app.core.config import GRID_SIZES_M, METRIC_SRID
 from app.database import get_engine
-from pipeline.import_osm import identity_checksum
 
 ORIGIN_ALIGNMENT_M = 1000
 MIN_AREA_SHARE = 0.1  # working parameter: city fragments below 10% of a full cell are slivers
@@ -29,12 +26,8 @@ MIN_BUILDINGS = 1  # working parameter for the "potentially residential" evidenc
 MIN_LAND_PART_M2 = 1.0  # smaller land parts left after removing water/forest are numerical slivers
 
 
-def grid_version(size: int, data_version: str) -> str:
-    return f"g{size}-{re.sub(r'[^0-9A-Za-z]', '', data_version)}"
-
-
-def cell_id(version: str, col: int, row: int) -> str:
-    return f"{version}-c{col:03d}-r{row:03d}"
+def cell_id(size: int, col: int, row: int) -> str:
+    return f"g{size}-c{col:03d}-r{row:03d}"
 
 
 def grid_origin(bounds, alignment: int = ORIGIN_ALIGNMENT_M) -> tuple[float, float]:
@@ -92,7 +85,7 @@ def building_counts(buildings: np.ndarray, city, size: int, origin: tuple[float,
     return Counter(zip(cols.tolist(), rows.tolist()))
 
 
-def build_cells(city, size: int, layers: dict[str, list], version: str) -> list[dict]:
+def build_cells(city, size: int, layers: dict[str, list]) -> list[dict]:
     """Cut the city into size x size cells and describe each cell (metric CRS)."""
     origin = grid_origin(city.bounds)
     cols = math.ceil((city.bounds[2] - origin[0]) / size)
@@ -120,7 +113,7 @@ def build_cells(city, size: int, layers: dict[str, list], version: str) -> list[
             point, method = choose_point(clip, shapely.union(water, forest))
             building_count = buildings.get((col, row), 0)
             cells.append({
-                "id": cell_id(version, col, row),
+                "id": cell_id(size, col, row),
                 "col": col,
                 "row": row,
                 "geometry": clip,
@@ -154,101 +147,71 @@ def summarize(cells: list[dict], city) -> dict:
         "point_land_cover": dict(Counter(c["point_land_cover"] for c in cells)),
         "included_land_use_status": dict(Counter(c["land_use_status"] for c in included)),
         "included_residential_evidence": dict(evidence),
-        "checksum_sha256": identity_checksum(
-            f"{c['id']}|{c['area_m2']:.1f}|{c['analysis_status']}|{c['land_use_status']}" for c in cells),
     }
 
 
 # --- database --------------------------------------------------------------------------
 
-def load_import(engine: Engine, data_version: str | None) -> dict:
+def load_import(engine: Engine) -> dict:
     with engine.connect() as connection:
         row = connection.execute(text(
-            "SELECT d.id, d.data_version, b.id, ST_AsBinary(b.geometry) FROM data_imports d "
-            "JOIN city_boundary b ON b.import_id = d.id WHERE d.import_status = 'completed' "
-            "AND (CAST(:version AS text) IS NULL OR d.data_version = :version) ORDER BY d.id DESC LIMIT 1"
-        ), {"version": data_version}).first()
+            "SELECT id, ST_AsBinary(geometry) FROM city_boundary LIMIT 1"
+        )).first()
         if row is None:
-            raise SystemExit("Brak zaimportowanych danych OSM; najpierw uruchom python -m pipeline.import_osm.")
+            raise SystemExit("Brak granicy miasta; najpierw uruchom python -m pipeline.import_osm.")
         layers: dict[str, list] = {}
         for kind, wkb in connection.execute(text(
-                "SELECT kind, ST_AsBinary(geometry) FROM land_cover WHERE import_id = :id ORDER BY id"),
-                {"id": row[0]}):
+                "SELECT kind, ST_AsBinary(geometry) FROM land_cover ORDER BY id")):
             layers.setdefault(kind, []).append(shapely.from_wkb(bytes(wkb)))
-    return {"import_id": row[0], "data_version": row[1], "boundary_id": row[2],
-            "city": shapely.from_wkb(bytes(row[3])), "layers": layers}
+    return {"city": shapely.from_wkb(bytes(row[1])), "layers": layers}
 
 
-def write_grid(engine: Engine, version: str, boundary_id: int, size: int, parameters: dict,
-               cells: list[dict], replace: bool) -> bool:
-    origin = (parameters["origin_x"], parameters["origin_y"])
+def write_grid(engine: Engine, size: int, cells: list[dict], replace: bool = False) -> bool:
     with engine.begin() as connection:
-        exists = connection.execute(
-            text("SELECT 1 FROM grid_versions WHERE grid_version = :v"), {"v": version}).scalar()
+        exists = connection.execute(text(
+            "SELECT 1 FROM analysis_cells WHERE cell_size_m = :size LIMIT 1"
+        ), {"size": size}).scalar()
         if exists and not replace:
             return False
         if exists:
-            connection.execute(text("DELETE FROM grid_versions WHERE grid_version = :v"), {"v": version})
+            connection.execute(text("DELETE FROM ml_runs WHERE cell_size_m = :size"), {"size": size})
+            connection.execute(text("DELETE FROM analysis_cells WHERE cell_size_m = :size"), {"size": size})
         connection.execute(text(
-            "INSERT INTO grid_versions (grid_version, boundary_id, cell_size_m, origin_x, origin_y, crs, parameters) "
-            "VALUES (:version, :boundary_id, :size, :x, :y, :crs, CAST(:parameters AS jsonb))"
-        ), {"version": version, "boundary_id": boundary_id, "size": size, "x": origin[0], "y": origin[1],
-            "crs": METRIC_CRS, "parameters": json.dumps(parameters, ensure_ascii=False)})
-        connection.execute(text(
-            "INSERT INTO analysis_cells (id, grid_version, col, row, geometry, full_geometry, representative_point, "
+            "INSERT INTO analysis_cells (id, cell_size_m, col, row, geometry, full_geometry, representative_point, "
             "representative_point_method, point_land_cover, area_m2, building_count, residential_area_m2, "
-            "land_use_status, analysis_status) VALUES (:id, :version, :col, :row, "
+            "land_use_status, analysis_status) VALUES (:id, :size, :col, :row, "
             "ST_Multi(ST_GeomFromWKB(:geometry, :srid)), ST_GeomFromWKB(:full_geometry, :srid), "
             "ST_GeomFromWKB(:point, :srid), :representative_point_method, :point_land_cover, :area_m2, "
             ":building_count, :residential_area_m2, :land_use_status, :analysis_status)"
         ), [{**{k: c[k] for k in ("id", "col", "row", "representative_point_method", "point_land_cover", "area_m2",
                                   "building_count", "residential_area_m2", "land_use_status", "analysis_status")},
-             "version": version, "srid": METRIC_SRID, "geometry": c["geometry"].wkb,
+             "size": size, "srid": METRIC_SRID, "geometry": c["geometry"].wkb,
              "full_geometry": c["full_geometry"].wkb, "point": c["representative_point"].wkb} for c in cells])
     return True
 
 
-def run(sizes, data_version: str | None = None, replace: bool = False) -> list[dict]:
+def run(sizes=GRID_SIZES_M, replace: bool = False) -> list[dict]:
     engine = get_engine()
-    source = load_import(engine, data_version)
+    source = load_import(engine)
     city = source["city"]
     reports = []
     for size in sizes:
-        version = grid_version(size, source["data_version"])
-        cells = build_cells(city, size, source["layers"], version)
-        origin = grid_origin(city.bounds)
-        parameters = {
-            "data_version": source["data_version"],
-            "cell_size_m": size,
-            "origin_x": origin[0],
-            "origin_y": origin[1],
-            "origin_alignment_m": ORIGIN_ALIGNMENT_M,
-            "min_area_share": MIN_AREA_SHARE,
-            "min_buildings": MIN_BUILDINGS,
-            "min_land_part_m2": MIN_LAND_PART_M2,
-            "summary": summarize(cells, city),
-        }
-        written = write_grid(engine, version, source["boundary_id"], size, parameters, cells, replace)
-        reports.append({"grid_version": version, "written": written, **parameters})
+        cells = build_cells(city, size, source["layers"])
+        written = write_grid(engine, size, cells, replace)
+        reports.append({"cell_size_m": size, "written": written, "summary": summarize(cells, city)})
     return reports
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--size", type=int, action="append", help="cell size in metres (default: 250 and 500)")
-    parser.add_argument("--data-version", help="data_imports.data_version (default: latest completed import)")
     parser.add_argument("--replace", action="store_true", help="delete and re-create the grid (cascades)")
     args = parser.parse_args()
 
-    reports = run(args.size or GRID_SIZES_M, args.data_version, args.replace)
-    reports_dir = get_settings().data_dir / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    reports = run(args.size or GRID_SIZES_M, args.replace)
     for report in reports:
         status = "Zapisano" if report["written"] else "Siatka już istnieje w bazie; pominięto (użyj --replace)"
-        print(f"{status}: {report['grid_version']}")
-        print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
-        (reports_dir / f"grid_{report['grid_version']}.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"{status}: {report['cell_size_m']} m, {report['summary']['cells']} komórek")
 
 
 if __name__ == "__main__":

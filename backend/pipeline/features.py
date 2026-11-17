@@ -1,25 +1,21 @@
-"""Compute versioned Euclidean accessibility features for analysis cells.
+"""Compute Euclidean accessibility features for analysis cells.
 
 Usage:
-    python -m pipeline.features [--grid-version VERSION] [--replace]
+    python -m pipeline.features [--cell-size-m 250] [--replace]
 
 All distances are in EPSG:2180 metres. The pipeline processes all cells, including
 boundary slivers; later analyses can filter by ``analysis_status`` and land use.
 """
 
 import argparse
-import hashlib
-import json
 import math
 
 import shapely
 from shapely import Point, STRtree
 from sqlalchemy import Engine, text
 
-from app.core.config import BOUNDARY_BUFFER_M, CATEGORIES, FEATURE_COLUMNS, METRIC_SRID, RADII_M, get_settings
+from app.core.config import BOUNDARY_BUFFER_M, CATEGORIES, FEATURE_COLUMNS, RADII_M
 from app.database import get_engine
-
-FEATURE_METHOD_VERSION = 1
 
 STATUS_COLUMNS = {"shop": "shop_status", "school": "school_status", "bus_stop": "bus_stop_status"}
 DISTANCE_COLUMNS = {
@@ -35,13 +31,6 @@ COUNT_COLUMNS = {
     ("bus_stop", 500): "bus_stops_500m",
     ("bus_stop", 1000): "bus_stops_1000m",
 }
-
-
-def feature_version(grid_version: str, import_id: int, parameters: dict) -> str:
-    """Return a stable ID tied to the grid, OSM import and computation settings."""
-    encoded = json.dumps(parameters, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    digest = hashlib.sha256(encoded).hexdigest()[:12]
-    return f"f-{grid_version}-{import_id}-{digest}"
 
 
 def _tree_for(geometries: list[Point]) -> STRtree | None:
@@ -76,7 +65,7 @@ def calculate_cell_features(
 
     A null distance means the nearest service cannot be established from the
     imported snapshot, not zero metres. For a point inside the city, the source
-    coverage radius is its distance to the city boundary plus the OSM buffer;
+    coverage radius is its distance to the city boundary plus the import buffer;
     a returned candidate is a proven nearest only when it falls within that
     radius. Counts are zero only when the source category exists and the imported
     buffer covers the requested radius. ``buffer_sufficient`` is true only when
@@ -131,146 +120,89 @@ def calculate_cell_features(
     return rows
 
 
-def _load_input(engine: Engine, requested_grid_version: str | None) -> dict:
+def _load_input(engine: Engine, cell_size_m: int) -> dict:
     with engine.connect() as connection:
-        grid = connection.execute(text(
-            "SELECT gv.grid_version, gv.boundary_id, cb.import_id, di.data_version, "
-            "COALESCE(NULLIF(di.validation_report->>'buffer_m', '')::double precision, 0) AS buffer_m "
-            "FROM grid_versions gv "
-            "JOIN city_boundary cb ON cb.id = gv.boundary_id "
-            "JOIN data_imports di ON di.id = cb.import_id "
-            "WHERE di.import_status = 'completed' "
-            "AND (CAST(:grid_version AS text) IS NULL OR gv.grid_version = :grid_version) "
-            "ORDER BY gv.created_at DESC, gv.grid_version DESC LIMIT 1"
-        ), {"grid_version": requested_grid_version}).first()
-        if grid is None:
-            raise SystemExit("Brak siatki dla ukończonego importu; najpierw uruchom pipeline.grid.")
-
+        boundary = connection.execute(text("SELECT id FROM city_boundary LIMIT 1")).scalar()
+        if boundary is None:
+            raise SystemExit("Brak granicy miasta; najpierw uruchom pipeline.import_osm.")
         cells = [{
             "id": cell_id,
             "representative_point": shapely.from_wkb(bytes(point_wkb)),
-            "coverage_radius_m": float(boundary_distance) + float(grid[4]),
+            "coverage_radius_m": float(boundary_distance) + BOUNDARY_BUFFER_M,
         } for cell_id, point_wkb, boundary_distance in connection.execute(text(
             "SELECT a.id, ST_AsBinary(a.representative_point), "
             "ST_Distance(ST_Boundary(cb.geometry), a.representative_point) "
-            "FROM analysis_cells a JOIN city_boundary cb ON cb.id = :boundary_id "
-            "WHERE a.grid_version = :grid ORDER BY a.id"),
-            {"grid": grid[0], "boundary_id": grid[1]})]
+            "FROM analysis_cells a CROSS JOIN city_boundary cb "
+            "WHERE a.cell_size_m = :size ORDER BY a.id"), {"size": cell_size_m})]
+        if not cells:
+            raise SystemExit(f"Brak siatki {cell_size_m} m; najpierw uruchom pipeline.grid.")
 
         services: dict[str, list[Point]] = {category: [] for category in CATEGORIES}
         for category, wkb in connection.execute(text(
-            "SELECT category, ST_AsBinary(geometry) FROM services "
-            "WHERE import_id = :import_id ORDER BY category, id"), {"import_id": grid[2]}):
+            "SELECT category, ST_AsBinary(geometry) FROM services ORDER BY category, id")):
             services[category].append(shapely.from_wkb(bytes(wkb)))
 
-    return {
-        "grid_version": grid[0],
-        "boundary_id": grid[1],
-        "import_id": grid[2],
-        "data_version": grid[3],
-        "source_buffer_m": float(grid[4]),
-        "cells": cells,
-        "services": services,
-    }
+    return {"cells": cells, "services": services}
 
 
-def _write_features(engine: Engine, version: str, grid: dict, parameters: dict,
-                    rows: list[dict], replace: bool) -> bool:
+def _write_features(engine: Engine, cell_size_m: int, rows: list[dict], replace: bool) -> bool:
     with engine.begin() as connection:
         exists = connection.execute(text(
-            "SELECT 1 FROM feature_versions WHERE feature_version = :version"),
-            {"version": version}).scalar()
+            "SELECT 1 FROM cell_features f JOIN analysis_cells c ON c.id = f.cell_id "
+            "WHERE c.cell_size_m = :size LIMIT 1"
+        ), {"size": cell_size_m}).scalar()
         if exists and not replace:
             return False
         if exists:
-            # Cascades to feature rows and any downstream runs/assessments tied to this version.
+            connection.execute(text("DELETE FROM ml_runs WHERE cell_size_m = :size"), {"size": cell_size_m})
             connection.execute(text(
-                "DELETE FROM feature_versions WHERE feature_version = :version"),
-                {"version": version})
+                "DELETE FROM accessibility_results WHERE cell_id IN "
+                "(SELECT id FROM analysis_cells WHERE cell_size_m = :size)"
+            ), {"size": cell_size_m})
+            connection.execute(text(
+                "DELETE FROM cell_features WHERE cell_id IN "
+                "(SELECT id FROM analysis_cells WHERE cell_size_m = :size)"
+            ), {"size": cell_size_m})
 
-        connection.execute(text(
-            "INSERT INTO feature_versions (feature_version, grid_version, import_id, distance_method, parameters) "
-            "VALUES (:version, :grid_version, :import_id, 'euclidean', CAST(:parameters AS jsonb))"
-        ), {
-            "version": version,
-            "grid_version": grid["grid_version"],
-            "import_id": grid["import_id"],
-            "parameters": json.dumps(parameters, ensure_ascii=False, sort_keys=True),
-        })
-
-        columns = ["cell_id", "feature_version", *FEATURE_COLUMNS,
+        columns = ["cell_id", *FEATURE_COLUMNS,
                    "shop_status", "school_status", "bus_stop_status", "buffer_sufficient"]
-        value_names = ["cell_id", "feature_version", *FEATURE_COLUMNS,
-                       "shop_status", "school_status", "bus_stop_status", "buffer_sufficient"]
         sql = text(
             "INSERT INTO cell_features (" + ", ".join(columns) + ") VALUES (" +
-            ", ".join(f":{name}" for name in value_names) + ")"
+            ", ".join(f":{name}" for name in columns) + ")"
         )
-        connection.execute(sql, [
-            {**row, "feature_version": version} for row in rows
-        ])
+        connection.execute(sql, rows)
     return True
 
 
-def run(grid_version: str | None = None, replace: bool = False) -> dict:
+def run(cell_size_m: int = 250, replace: bool = False) -> dict:
     engine = get_engine()
-    source = _load_input(engine, grid_version)
-    parameters = {
-        "method_version": FEATURE_METHOD_VERSION,
-        "distance_method": "euclidean",
-        "crs": f"EPSG:{METRIC_SRID}",
-        "anchor": "analysis_cells.representative_point",
-        "radii_m": list(RADII_M),
-        "source_buffer_m": source["source_buffer_m"],
-        "expected_buffer_m": BOUNDARY_BUFFER_M,
-        "category_status": {
-            "ok": "source exists and at least one object found in imported snapshot",
-            "none_found": "source category exists but no object found within provably covered extent",
-            "no_source": "import contains no objects for this category",
-        },
-        "buffer_sufficient_definition": (
-            "source buffer covers the largest configured radius and a nearest object "
-            "was found for every category within source_buffer_m + representative-point "
-            "distance to the city boundary"
-        ),
-        "source_count_by_category": {
-            category: len(source["services"][category]) for category in CATEGORIES
-        },
-    }
-    version = feature_version(source["grid_version"], source["import_id"], parameters)
+    source = _load_input(engine, cell_size_m)
     rows = calculate_cell_features(
-        source["cells"], source["services"], source_buffer_m=source["source_buffer_m"]
+        source["cells"], source["services"], source_buffer_m=BOUNDARY_BUFFER_M
     )
-    written = _write_features(engine, version, source, parameters, rows, replace)
+    written = _write_features(engine, cell_size_m, rows, replace)
     status_counts = {
         column: {status: sum(row[column] == status for row in rows)
                  for status in ("ok", "none_found", "no_source", "error")}
         for column in STATUS_COLUMNS.values()
     }
     return {
-        "feature_version": version,
-        "grid_version": source["grid_version"],
-        "data_version": source["data_version"],
+        "cell_size_m": cell_size_m,
         "cell_count": len(rows),
         "written": written,
         "buffer_sufficient_cells": sum(row["buffer_sufficient"] for row in rows),
         "status_counts": status_counts,
-        "parameters": parameters,
     }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--grid-version", help="grid_versions.grid_version (default: latest)")
+    parser.add_argument("--cell-size-m", type=int, default=250, help="grid cell size in metres (default: 250)")
     parser.add_argument("--replace", action="store_true",
-                        help="recreate this feature version; cascades to associated ML/assessment results")
+                        help="recalculate features and remove dependent ML/assessment results")
     args = parser.parse_args()
-    report = run(args.grid_version, args.replace)
-    reports_dir = get_settings().data_dir / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    name = f"features_{report['feature_version']}.json"
-    (reports_dir / name).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    report = run(args.cell_size_m, args.replace)
+    print(f"Cechy {report['cell_size_m']} m: {report['cell_count']} komórek, zapisano={report['written']}")
 
 
 if __name__ == "__main__":

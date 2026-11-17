@@ -4,12 +4,11 @@ import pytest
 from shapely import MultiPolygon, Point, box
 from sqlalchemy import text
 
-from pipeline import import_osm
 from pipeline.import_osm import (
     build_services, classify_school, classify_shop, classify_stop, isced_levels,
-    merge_school_representations, write_import,
+    merge_school_representations, merge_stop_representations, write_import,
 )
-from pipeline.osm import to_wgs84
+from pipeline.geo import to_wgs84
 
 
 @pytest.mark.parametrize("value, expected", [
@@ -44,8 +43,8 @@ def test_isced_levels_parse_lists_and_ranges():
 @pytest.mark.parametrize("tags, expected", [
     ({"highway": "bus_stop", "public_transport": "platform"}, "bus_tram_stop"),
     ({"highway": "bus_stop"}, "bus_tram_stop"),
-    ({"public_transport": "platform", "railway": "platform"}, "rail_platform"),
-    ({"public_transport": "platform", "train": "yes"}, "rail_platform"),
+    ({"public_transport": "platform", "railway": "platform"}, None),
+    ({"public_transport": "platform", "train": "yes"}, None),
     ({"public_transport": "stop_position", "bus": "yes"}, None),
 ])
 def test_stop_rule(tags, expected):
@@ -89,6 +88,25 @@ def node(osm_id, x, y, **tags):
     return {"type": "node", "id": osm_id, "lon": lon, "lat": lat, "tags": tags}
 
 
+def test_merge_only_matching_coded_node_and_way_stops():
+    def stop(source_type, source_id, name, x):
+        return {"category": "bus_stop", "source_type": source_type,
+                "source_id": source_id, "name": name, "geometry": Point(x, 0)}
+
+    records = [
+        stop("node", 1, "Fikcyjna (119)", 0),
+        stop("way", 2, "Fikcyjna (119)", 4),
+        stop("way", 3, "Fikcyjna (120)", 5),
+        stop("way", 4, "Fikcyjna (119)", 20),
+        stop("node", 5, "Fikcyjna", 30),
+        stop("way", 6, "Fikcyjna", 31),
+    ]
+    kept, merges = merge_stop_representations(records)
+
+    assert [r["source_id"] for r in kept] == [1, 3, 4, 5, 6]
+    assert merges == [{"kept": "node/1", "dropped": "way/2", "name": "Fikcyjna (119)"}]
+
+
 def test_build_services_categories_buffer_and_single_count():
     # Fictitious metric coordinates around an arbitrary EPSG:2180 origin.
     ox, oy = 500_000, 300_000
@@ -110,33 +128,36 @@ def test_build_services_categories_buffer_and_single_count():
 
     assert report["counts"] == {
         "shop": {"supermarket": {"city": 1}, "bakery": {"buffer": 1}},
-        "bus_stop": {"bus_tram_stop": {"city": 1}, "rail_platform": {"city": 1}},
+        "bus_stop": {"bus_tram_stop": {"city": 1}},
         "school": {"primary": {"city": 1}},
     }
     assert report["dropped_outside_buffer"] == {"shop": 1}
     assert [s["name"] for s in report["excluded"]["language_schools"]] == ["Fikcyjne Language Club"]
     assert all(r["geometry"].geom_type == "Point" for r in records)
-    assert len(report["checksum_sha256"]) == 64
+
+
+def test_empty_import_cannot_replace_existing_data():
+    city = MultiPolygon([box(500_000, 300_000, 501_000, 301_000)])
+    with pytest.raises(ValueError, match="żadnych usług"):
+        write_import(None, {"tags": {"name": "SYNTHETIC"}}, city, [], [], replace=True)
 
 
 @pytest.mark.db
-def test_write_import_is_idempotent_and_stores_metric_geometries(db, monkeypatch):
-    monkeypatch.setattr(import_osm, "DATA_VERSION", "SYNTHETIC-test")
+def test_write_import_is_idempotent_and_stores_metric_geometries(db):
     city = MultiPolygon([box(500_000, 300_000, 501_000, 301_000)])
     services = [{"source_type": "node", "source_id": 1, "name": None, "category": "shop",
                  "subcategory": "supermarket", "geometry": Point(500_100, 300_100),
-                 "source_tags": {"shop": "supermarket"}, "inside_city": True}]
+                 "inside_city": True}]
     land = [{"source_type": "way", "source_id": 2, "kind": "building",
              "geometry": box(500_200, 300_200, 500_210, 300_210)}]
-    report = {"downloaded_at": "2026-01-01T00:00:00+00:00"}
     relation = {"id": 99, "tags": {"name": "SYNTHETIC"}}
 
-    first = write_import(db, report, relation, city, services, land, replace=False)
-    assert write_import(db, report, relation, city, services, land, replace=False) is None
+    assert write_import(db, relation, city, services, land, replace=False)
+    assert not write_import(db, relation, city, services, land, replace=False)
     with db.connect() as c:
         row = c.execute(text(
-            "SELECT record_count, (SELECT ST_SRID(geometry) FROM services LIMIT 1), "
-            "(SELECT count(*) FROM land_cover), (SELECT ST_Area(geometry) FROM city_boundary) "
-            "FROM data_imports WHERE id = :id"), {"id": first}).one()
-    assert row == (3, 2180, 1, pytest.approx(1_000_000))
-    assert write_import(db, report, relation, city, services, land, replace=True) != first
+            "SELECT (SELECT count(*) FROM services), (SELECT ST_SRID(geometry) FROM services LIMIT 1), "
+            "(SELECT count(*) FROM land_cover), ST_Area(geometry) FROM city_boundary"
+        )).one()
+    assert row == (1, 2180, 1, pytest.approx(1_000_000))
+    assert write_import(db, relation, city, services, land, replace=True)
