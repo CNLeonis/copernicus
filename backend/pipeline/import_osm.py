@@ -12,13 +12,14 @@ import re
 from collections import Counter, defaultdict
 
 import shapely
-from shapely import MultiPolygon, Point, Polygon, STRtree
+from shapely import LineString, MultiPolygon, Point, Polygon, STRtree
 from sqlalchemy import Engine, text
 
 from app.core.config import BOUNDARY_BUFFER_M, METRIC_SRID
 from app.database import get_engine
 from pipeline.geo import to_metric, to_wgs84
 from pipeline.osm import element_point, overpass, relation_to_multipolygon
+from pipeline.service_import import same_school_name
 
 RELATION_ID = 2730708  # gmina miejska Opole, TERYT 1661011
 
@@ -88,30 +89,58 @@ def normalize_name(name: str | None) -> str | None:
 
 
 def merge_stop_representations(records: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Keep the OSM node when a nearby way describes the same coded stop."""
+    """Keep a stop node when a way duplicates its name or contains that node."""
     nodes = [r for r in records if r["category"] == "bus_stop" and r["source_type"] == "node"]
     dropped, merges = set(), []
+    positions = [r for r in nodes if r.get("stop_role") == "stop_position"]
+    platforms = [r for r in nodes if r.get("stop_role") == "platform"]
+    for position in positions:
+        nearby = [p for p in platforms if p["geometry"].distance(position["geometry"]) <= 15]
+        if len(nearby) != 1:
+            continue
+        platform = nearby[0]
+        if sum(p["geometry"].distance(platform["geometry"]) <= 15 for p in positions) != 1:
+            continue
+        if position["name"] and platform["name"] and normalize_name(position["name"]) != normalize_name(platform["name"]):
+            continue
+        platform["name"] = platform["name"] or position["name"]
+        dropped.add(id(position))
+        merges.append({"kept": f"node/{platform['source_id']}",
+                       "dropped": f"node/{position['source_id']}", "name": platform["name"]})
+    nodes = [r for r in nodes if id(r) not in dropped]
     for record in records:
         if record["category"] != "bus_stop" or record["source_type"] != "way":
             continue
         name = normalize_name(record["name"])
-        if not name or not re.search(r"\(\d+\)$", name):
-            continue
-        match = next((node for node in nodes if normalize_name(node["name"]) == name
-                      and node["geometry"].distance(record["geometry"]) <= 10), None)
+        match = None
+        if not name:
+            members = [node for node in nodes if node['source_id'] in record.get('node_ids', [])]
+            # A platform with multiple stop nodes may represent distinct stands.
+            if len(members) == 1:
+                match = members[0]
+            elif not members and record.get("platform_geometry") is not None:
+                shape = record["platform_geometry"]
+                nearby = [node for node in nodes if shape.distance(node["geometry"]) <= 10]
+                # Match the platform edge, not its centre. Leave multiple stands alone.
+                if len(nearby) == 1 and shape.distance(nearby[0]["geometry"]) <= 3:
+                    match = nearby[0]
+        elif re.search(r"\(\d+\)$", name):
+            match = next((node for node in nodes if normalize_name(node["name"]) == name
+                          and node["geometry"].distance(record["geometry"]) <= 10), None)
         if match is not None:
             dropped.add(id(record))
             merges.append({"kept": f"node/{match['source_id']}",
-                           "dropped": f"way/{record['source_id']}", "name": record["name"]})
+                           "dropped": f"way/{record['source_id']}", "name": match["name"]})
     return [r for r in records if id(r) not in dropped], merges
 
 
 def merge_school_representations(schools: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Merge a school node with the school outline that contains it.
+    """Merge representations of the same school using name and containment.
 
     Explicit rule: a node is merged into a way/relation outline only if the node lies
-    inside the outline AND the normalized names are equal, or the outline has no name
+    inside the outline AND the school identities match, or the outline has no name
     and contains exactly this one school node. Proximity alone never merges objects.
+    Named nested outlines also merge when their school identities match.
     """
     nodes = [s for s in schools if s["source_type"] == "node"]
     outlines = [s for s in schools if s["polygon"] is not None]
@@ -126,7 +155,7 @@ def merge_school_representations(schools: list[dict]) -> tuple[list[dict], list[
         contained = inside[id(outline)]
         outline_name = normalize_name(outline["name"])
         for node in contained:
-            same_name = outline_name is not None and normalize_name(node["name"]) == outline_name
+            same_name = same_school_name(node["name"], outline["name"])
             sole_in_unnamed = outline_name is None and len(contained) == 1 and node["name"]
             if not (same_name or sole_in_unnamed):
                 continue
@@ -138,7 +167,24 @@ def merge_school_representations(schools: list[dict]) -> tuple[list[dict], list[
                 "rule": "same_name_point_in_outline" if same_name else "single_named_point_in_unnamed_outline",
             })
             break
-    return [s for s in schools if id(s) not in dropped], merges
+    # A named school building and its enclosing school grounds can also be
+    # separate OSM objects. Keep one only when identity AND containment agree.
+    kept = []
+    for school in schools:
+        if id(school) in dropped:
+            continue
+        match = next((other for other in kept
+                      if school["polygon"] is not None and other["polygon"] is not None
+                      and same_school_name(school["name"], other["name"])
+                      and (school["polygon"].covers(other["polygon"])
+                           or other["polygon"].covers(school["polygon"]))), None)
+        if match is None:
+            kept.append(school)
+        else:
+            merges.append({"kept": f"{match['source_type']}/{match['source_id']}",
+                           "dropped": f"{school['source_type']}/{school['source_id']}",
+                           "name": match["name"], "rule": "same_school_nested_outlines"})
+    return kept, merges
 
 
 def close_school_pairs(schools: list[dict], distance_m: float) -> list[dict]:
@@ -200,7 +246,7 @@ def fetch_services(buffer_wgs84, refresh: bool):
     query = (
         f"{header()}{bbox_filter(buffer_wgs84)};"
         f'(nwr["shop"~"^({shop_regex})$"];nwr["highway"="bus_stop"];nwr["public_transport"="platform"];);'
-        "out tags center;"
+        "out body geom;"
     )
     return overpass(query, cache_name="import_services", refresh=refresh)
 
@@ -237,9 +283,23 @@ def build_services(service_data: dict, school_data: dict, city, buffer) -> tuple
             if not buffer.covers(geometry):
                 report["dropped_outside_buffer"][category] += 1
                 continue
-            records.append(service_record(element, category, subcategory, geometry, city))
+            record = service_record(element, category, subcategory, geometry, city)
+            if category == "bus_stop":
+                record["stop_role"] = tags.get("public_transport")
+            if category == "bus_stop" and element["type"] == "way":
+                record["node_ids"] = element.get("nodes", [])
+                coords = [(p["lon"], p["lat"]) for p in element.get("geometry", [])]
+                if len(coords) >= 2:
+                    shape = Polygon(coords) if len(coords) >= 4 and coords[0] == coords[-1] else LineString(coords)
+                    if shape.is_valid:
+                        record["platform_geometry"] = to_metric(shape)
+            records.append(record)
 
     records, report["stop_merges"] = merge_stop_representations(records)
+    for record in records:
+        record.pop("node_ids", None)
+        record.pop("platform_geometry", None)
+        record.pop("stop_role", None)
 
     report["raw_elements"]["schools"] = len(school_data["elements"])
     schools = []

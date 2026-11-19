@@ -1,6 +1,7 @@
 """Shared matching and database write for additional service points."""
 
 import re
+import unicodedata
 from collections import Counter
 from pathlib import Path
 from typing import Callable
@@ -17,6 +18,44 @@ STOP_CODE = re.compile(r"\s*\((\d+)\)\s*$")
 
 def _normalized(name: str | None) -> str:
     return " ".join(name.casefold().split()) if name else ""
+
+
+def _shop_name(name: str | None) -> str:
+    """Compare a shop name with its optional Opole/local district suffix."""
+    name = re.sub(r"[\W_]+", " ", (name or "").casefold()).strip()
+    return re.sub(r"\s+opole(?:\s+\w+)?$", "", name)
+
+
+def school_identity(name: str | None) -> tuple | None:
+    """Match school names, retaining type, number and distinguishing qualifiers."""
+    name = (name or "").casefold().replace("ł", "l")
+    name = "".join(c for c in unicodedata.normalize("NFKD", name) if not unicodedata.combining(c))
+    name = re.sub(r"[^a-z0-9]+", " ", name).strip()
+    if not name:
+        return None
+    qualifiers = tuple(word for word in ("niepubliczna", "niepubliczne", "doroslych", "specjalna", "specjalne") if word in name.split())
+    name = re.sub(r"^(?:publiczna|publiczne|niepubliczna|niepubliczne)\s+", "", name)
+    name = re.sub(r"\s+(?:w opolu|opole)$", "", name)
+    name = name.replace("z oddzialami dwujezycznymi", "").strip()
+    match = re.match(r"^(szkola podstawowa|psp|sp|liceum ogolnoksztalcace|plo|lo)\s+(?:nr\s+)?(\d+|[ivx]+)\b", name)
+    if not match:
+        leading = re.match(r"^([ivx]+)\s+(liceum ogolnoksztalcace)\b", name)
+        if leading:
+            kind, number = leading[2], leading[1]
+        else:
+            return ("name", " ".join(name.split()), qualifiers)
+    else:
+        kind, number = match[1], match[2]
+    if not number.isdigit():
+        values = {"i": 1, "v": 5, "x": 10}
+        number = sum(-values[c] if i + 1 < len(number) and values[c] < values[number[i + 1]]
+                     else values[c] for i, c in enumerate(number))
+    return ("primary" if kind in {"szkola podstawowa", "psp", "sp"} else "secondary", int(number), qualifiers)
+
+
+def same_school_name(left: str | None, right: str | None) -> bool:
+    identity = school_identity(left)
+    return identity is not None and identity == school_identity(right)
 
 
 def _stop_code(name: str | None) -> str | None:
@@ -46,6 +85,11 @@ def reconcile_places(candidates: list[dict], existing: list[dict]) -> tuple[list
                   (150 if category == "bus_stop" else MATCH_DISTANCE_M[category])]
         if category == "bus_stop":
             duplicate = any(_same_stop(candidate, item, distance) for item, distance in nearby)
+        elif category == "shop":
+            name = _shop_name(candidate["name"])
+            duplicate = bool(name) and any(_shop_name(item["name"]) == name for item, _ in nearby)
+        elif category == "school":
+            duplicate = any(same_school_name(item["name"], candidate["name"]) for item, _ in nearby)
         else:
             duplicate = any(_normalized(item["name"]) == _normalized(candidate["name"])
                             for item, _ in nearby)
