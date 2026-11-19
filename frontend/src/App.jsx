@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import LocationMap from './components/LocationMap.jsx'
 import EvaluationResult from './components/EvaluationResult.jsx'
-import { analyzeLocation } from './services/analysis.js'
+import { analysisSource, analyzeLocation } from './services/analysis.js'
 
 export default function App() {
+  const demo = analysisSource === 'demo'
   const [point, setPoint] = useState(null)
   const [locating, setLocating] = useState(false)
   const [locationError, setLocationError] = useState('')
@@ -80,9 +81,9 @@ export default function App() {
       </header>
       <main id="main">
         <section className="intro" aria-labelledby="page-heading">
-          <p className="eyebrow">Twoje miejsce w mieście</p>
-          <h1 id="page-heading">Wybierz punkt.<br /><span>Poznaj okolicę.</span></h1>
-          <p>Mapa Opola i podgląd dostępności sklepów, szkół i przystanków.</p>
+          <p className="eyebrow">Opole · GIS + ML</p>
+          <h1 id="page-heading">Wykrywanie obszarów<br /><span>niedostatecznie wyposażonych w usługi</span></h1>
+          <p>Mapa wskazuje obszary o ograniczonej dostępności sklepów spożywczych, szkół i przystanków komunikacji publicznej na podstawie zaimportowanych danych.</p>
         </section>
         <section className="explorer" aria-label="Wybór lokalizacji">
           <LocationMap point={point} onSelect={selectPoint} />
@@ -103,15 +104,15 @@ export default function App() {
             </div>
             <div className="demo-action">
               <button type="button" className="primary-button" disabled={!point || loading} onClick={loadEvaluation}>
-                {loading ? 'Wczytywanie…' : 'Pokaż odpowiedź demo'} <span aria-hidden="true">↗</span>
+                {loading ? 'Wczytywanie…' : demo ? 'Pokaż odpowiedź demo' : 'Analizuj punkt'} <span aria-hidden="true">↗</span>
               </button>
-              <p>Tryb demonstracyjny. Przykładowa odpowiedź nie jest oceną wybranego punktu.</p>
+              {demo && <p>Tryb demonstracyjny. Przykładowa odpowiedź nie jest oceną wybranego punktu.</p>}
             </div>
           </aside>
         </section>
         <div aria-live="polite" aria-busy={loading}>
           {error && <p className="error-message" role="alert">{error}</p>}
-          {result ? <EvaluationResult result={result} /> : <section className="empty-result"><span aria-hidden="true">◎</span><p>{loading ? 'Wczytywanie odpowiedzi demonstracyjnej…' : 'Tutaj pojawi się podgląd odpowiedzi demonstracyjnej.'}</p></section>}
+          {result ? <EvaluationResult result={result} /> : <section className="empty-result"><span aria-hidden="true">◎</span><p>{loading ? 'Wczytywanie wyniku…' : demo ? 'Tutaj pojawi się podgląd odpowiedzi demonstracyjnej.' : 'Wybierz punkt i uruchom analizę.'}</p></section>}
         </div>
       </main>
       <footer><span>copernicus / Opole</span><span>Odkrywaj miasto, punkt po punkcie.</span></footer>

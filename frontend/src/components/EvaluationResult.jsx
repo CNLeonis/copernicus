@@ -5,7 +5,6 @@ const categories = [
 ]
 const noData = 'Brak danych'
 const classes = { high: 'Wysoka', medium: 'Średnia', low: 'Niska', no_data: 'Brak danych' }
-const variants = { relative: 'względny', threshold: 'progowy' }
 
 function metres(value) {
   return value === null || value === undefined ? noData : `${Math.round(value)} m`
@@ -32,15 +31,13 @@ export default function EvaluationResult({ result }) {
       </div>
       <article className="overall-card">
         <div><span className="eyebrow">Ocena dostępności</span><h3>Jawne kryteria</h3></div>
-        {result.assessment.length === 0
+        {!result.assessment
           ? <p className="unavailable">Ocena jeszcze niedostępna</p>
           : <dl className="assessment">
-            {result.assessment.map((item) => (
-              <div key={item.assessment_version}>
-                <dt>Wariant {variants[item.variant] ?? item.variant}</dt>
-                <dd>{classes[item.accessibility_class] ?? item.accessibility_class}</dd>
-              </div>
-            ))}
+            <div>
+              <dt>Ocena według reguł</dt>
+              <dd>{classes[result.assessment.accessibility_class] ?? result.assessment.accessibility_class}</dd>
+            </div>
           </dl>}
       </article>
       <div className="category-grid">

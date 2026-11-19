@@ -3,7 +3,7 @@
   "location": null,
   "inside_city": null,
   "cell_id": null,
-  "grid_version": null,
+  "cell_size_m": 250,
   "distance_method": "euclidean",
   "radius_m": 1000,
   "point_features": {
@@ -16,8 +16,6 @@
   },
   "cell_features": null,
   "clustering": [],
-  "assessment": [],
-  "data_version": null,
-  "feature_version": null,
+  "assessment": null,
   "warnings": []
 }
