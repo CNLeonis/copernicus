@@ -63,6 +63,29 @@ def test_boundary_and_services_have_only_analysis_fields(db, db_client):
 
 
 @pytest.mark.db
+def test_service_building_uses_smallest_containing_outline_without_changing_points(db, db_client):
+    seed_synthetic(db)
+    with db.begin() as connection:
+        for radius in (30, 10):
+            connection.execute(text(
+                "INSERT INTO land_cover (kind, geometry) SELECT 'building', "
+                "ST_Multi(ST_Buffer(geometry, :radius)) FROM services WHERE category='shop'"
+            ), {"radius": radius})
+        expected = connection.execute(text(
+            "SELECT ST_AsGeoJSON(ST_Transform(geometry, 4326))::json "
+            "FROM land_cover ORDER BY ST_Area(geometry) LIMIT 1"
+        )).scalar_one()
+    plain = db_client.get('/api/services').json()
+    detailed = db_client.get('/api/services', params={'include_buildings': True}).json()
+    assert plain['total'] == detailed['total'] == 2
+    for original, feature in zip(plain['features'], detailed['features'], strict=True):
+        assert original['geometry'] == feature['geometry']
+        assert 'building_geometry' not in original['properties']
+        outline = feature['properties']['building_geometry']
+        assert outline == (expected if feature['properties']['category'] == 'shop' else None)
+
+
+@pytest.mark.db
 def test_services_bbox_and_pagination(db, db_client):
     seed_synthetic(db)
     first = db_client.get("/api/services", params={"limit": 1})

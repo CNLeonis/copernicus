@@ -2,6 +2,7 @@
 
 import json
 import math
+from collections.abc import Mapping
 from enum import IntEnum
 from typing import Annotated, Literal
 
@@ -85,9 +86,10 @@ def _assignments(connection: Connection, cell_id: str, cell_size_m: int) -> list
         "(a.cluster_label = -1) AS is_noise "
         "FROM cluster_assignments a JOIN ml_runs r ON r.id = a.run_id "
         "WHERE a.cell_id = :cell AND r.cell_size_m = :size AND r.is_published "
-        "ORDER BY CASE WHEN r.parameters->>'feature_set' = 'counts_six' "
-        "AND r.algorithm = 'kmeans' AND r.parameters->>'n_clusters' = '2' "
-        "THEN 0 ELSE 1 END, r.id"
+        "AND r.sample_filter = 'all' AND (r.algorithm = 'hdbscan' OR "
+        "(r.algorithm = 'kmeans' AND r.parameters->>'feature_set' = 'counts_six' "
+        "AND r.parameters->>'n_clusters' = '2')) "
+        "ORDER BY CASE WHEN r.algorithm = 'kmeans' THEN 0 ELSE 1 END, r.id"
     ), {"cell": cell_id, "size": cell_size_m}).mappings().all()
     return [dict(row) for row in rows]
 
@@ -98,6 +100,26 @@ def _assessment(connection: Connection, cell_id: str) -> dict | None:
         "FROM accessibility_results WHERE cell_id = :cell"
     ), {"cell": cell_id}).mappings().first()
     return dict(row) if row else None
+
+
+def _point_assessment(
+    point_features: Mapping[str, float | int | None], radius_m: int,
+) -> dict[str, str | int]:
+    counts = {
+        "shop": point_features["shops_within_radius"],
+        "school": point_features["schools_within_radius"],
+        "bus_stop": point_features["bus_stops_within_radius"],
+    }
+    zero_count = sum(value == 0 for value in counts.values())
+    if zero_count >= 2:
+        accessibility_class = "low"
+    elif any(value is None for value in counts.values()):
+        accessibility_class = "no_data"
+    elif zero_count == 1:
+        accessibility_class = "medium"
+    else:
+        accessibility_class = "high"
+    return {"accessibility_class": accessibility_class, "radius_m": radius_m}
 
 
 def _run(connection: Connection, run_id: str) -> dict:
@@ -208,6 +230,7 @@ def analyze_location(payload: AnalyzeLocationRequest, connection: ConnectionDep)
         "distance_method": payload.distance_method,
         "radius_m": payload.radius_m,
         "point_features": point_features,
+        "point_assessment": _point_assessment(point_features, payload.radius_m),
         "cell_features": (
             {name: feature_row[name] for name in FEATURE_COLUMNS} if feature_row
             else {name: None for name in FEATURE_COLUMNS}
@@ -237,6 +260,7 @@ def boundary(connection: ConnectionDep) -> dict:
 def services(
     connection: ConnectionDep,
     category: Annotated[list[str] | None, Query()] = None,
+    include_buildings: bool = False,
     bbox: str | None = None,
     limit: Annotated[int, Query(ge=1, le=SERVICE_LIMIT)] = 1000,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -245,12 +269,19 @@ def services(
     if any(item not in CATEGORIES for item in categories):
         raise HTTPException(status_code=422, detail=f"category musi należeć do: {', '.join(CATEGORIES)}.")
     bbox_sql, bbox_params = _bbox_clause("s", bbox)
-    params = {"categories": categories, "limit": limit, "offset": offset, **bbox_params}
+    params = {"categories": categories, "limit": limit, "offset": offset,
+              "include_buildings": include_buildings, **bbox_params}
     base = "FROM services s WHERE s.category = ANY(:categories) " + bbox_sql
     total = connection.execute(text("SELECT count(*)::integer " + base), params).scalar_one()
     rows = connection.execute(text(
         "SELECT s.id, s.category, s.subcategory, s.name, s.inside_city, "
-        "ST_AsGeoJSON(ST_Transform(s.geometry, 4326)) AS geometry " + base +
+        "ST_AsGeoJSON(ST_Transform(s.geometry, 4326)) AS geometry, "
+        "ST_AsGeoJSON(ST_Transform(b.geometry, 4326)) AS building_geometry "
+        "FROM services s LEFT JOIN LATERAL ("
+        " SELECT geometry FROM land_cover b WHERE :include_buildings "
+        " AND s.category IN ('shop', 'school') AND b.kind = 'building' "
+        " AND ST_Covers(b.geometry, s.geometry) ORDER BY ST_Area(b.geometry), b.id LIMIT 1"
+        ") b ON true WHERE s.category = ANY(:categories) " + bbox_sql +
         " ORDER BY s.category, s.id LIMIT :limit OFFSET :offset"
     ), params).mappings().all()
     return {
@@ -262,6 +293,8 @@ def services(
                 "id": row["id"], "category": row["category"],
                 "subcategory": row["subcategory"], "name": row["name"],
                 "inside_city": row["inside_city"],
+                **({"building_geometry": _geojson(row["building_geometry"]) if row["building_geometry"] else None}
+                   if include_buildings else {}),
             },
         } for row in rows],
         "total": total, "limit": limit, "offset": offset,

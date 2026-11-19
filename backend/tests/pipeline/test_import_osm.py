@@ -80,6 +80,17 @@ def test_school_merge_rules():
 
 
 CITY = box(0, 0, 1000, 1000)
+
+
+def test_school_building_and_grounds_with_name_variants_are_one_school():
+    records = [
+        school("way", 1, "Liceum Ogólnokształcące nr VI", (50, 50), box(0, 0, 100, 100)),
+        school("relation", 2, "Publiczne Liceum Ogólnokształcące nr 6", (50, 50), box(30, 30, 60, 60)),
+        school("way", 3, "Szkoła Podstawowa nr 6", (40, 40), box(35, 35, 50, 50)),
+    ]
+    kept, merges = merge_school_representations(records)
+    assert [s["source_id"] for s in kept] == [1, 3]
+    assert merges[0]["rule"] == "same_school_nested_outlines"
 BUFFER = CITY.buffer(2000)
 
 
@@ -105,6 +116,50 @@ def test_merge_only_matching_coded_node_and_way_stops():
 
     assert [r["source_id"] for r in kept] == [1, 3, 4, 5, 6]
     assert merges == [{"kept": "node/1", "dropped": "way/2", "name": "Fikcyjna (119)"}]
+
+
+def test_unnamed_platform_merges_only_with_its_single_named_stop_node():
+    def stop(kind, identifier, name, members=()):
+        return {"category": "bus_stop", "source_type": kind, "source_id": identifier,
+                "name": name, "geometry": Point(0, 0), "node_ids": members}
+    records = [stop("node", 1, "Fikcyjny (505)"), stop("node", 2, "Fikcyjny (504)"),
+               stop("way", 3, None, [1]), stop("way", 4, None, [1, 2]),
+               stop("way", 5, None, [99]), stop("way", 6, "Inny (506)", [1]),
+               stop("node", 7, None), stop("way", 8, None, [7])]
+    kept, merges = merge_stop_representations(records)
+    assert [r['source_id'] for r in kept] == [1, 2, 4, 5, 6, 7]
+    assert merges == [{"kept": "node/1", "dropped": "way/3", "name": "Fikcyjny (505)"},
+                      {"kept": "node/7", "dropped": "way/8", "name": None}]
+
+
+@pytest.mark.parametrize("offset,second_node,merged", [(2, False, True), (4, False, False), (2, True, False)])
+def test_platform_edge_matching_preserves_ambiguous_stands(offset, second_node, merged):
+    node = {"category": "bus_stop", "source_type": "node", "source_id": 1,
+            "name": None, "geometry": Point(0, 0)}
+    platform = {"category": "bus_stop", "source_type": "way", "source_id": 2,
+                "name": None, "geometry": Point(15, offset),
+                "platform_geometry": box(-1, offset, 31, offset + 1)}
+    records = [node, platform]
+    if second_node:
+        records.append({**node, "source_id": 3, "geometry": Point(5, 0)})
+    kept, merges = merge_stop_representations(records)
+    assert bool(merges) == merged
+    assert (platform not in kept) == merged
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_stop_position_and_platform_merge_only_when_unambiguous(ambiguous):
+    position = {"category": "bus_stop", "source_type": "node", "source_id": 1,
+                "name": "Fikcyjny (1)", "geometry": Point(0, 0), "stop_role": "stop_position"}
+    platform = {**position, "source_id": 2, "name": None, "geometry": Point(0, 8), "stop_role": "platform"}
+    records = [position, platform]
+    if ambiguous:
+        records.append({**platform, "source_id": 3, "geometry": Point(5, 8)})
+    kept, merges = merge_stop_representations(records)
+    assert bool(merges) is not ambiguous
+    if not ambiguous:
+        assert kept == [platform]
+        assert platform['name'] == 'Fikcyjny (1)'
 
 
 def test_build_services_categories_buffer_and_single_count():

@@ -1,11 +1,40 @@
 """All place names and coordinates in these tests are SYNTHETIC and fictitious."""
 
 import json
+import pytest
 
 from shapely import Point, box
 
 from pipeline.import_overture import parse_places, reconcile_places
 from pipeline.geo import to_wgs84
+from pipeline.service_import import same_school_name
+
+
+@pytest.mark.parametrize("left,right,expected", [
+    ("II Liceum Ogólnokształcące", "Publiczne Liceum Ogólnokształcące nr II z Oddziałami Dwujęzycznymi w Opolu", True),
+    ("Liceum Ogólnokształcące nr VI im. Fikcyjnego Patrona", "Publiczne Liceum Ogolnoksztalcace nr 6", True),
+    ("Publiczna Szkoła Podstawowa nr 5", "Publiczna Szkola Podstawowa nr 5 z Oddzialami Integracyjnymi", True),
+    ("Niepubliczna Szkoła Podstawowa Nasza Szkoła", "Niepubliczna Szkoła Podstawowa Nasza Szkoła Opole", True),
+    ("Liceum Ogólnokształcące nr II", "Szkoła Podstawowa nr 2", False),
+    ("Szkoła Podstawowa nr 2", "Szkoła Podstawowa nr 21", False),
+    ("Liceum Ogólnokształcące nr II", "Liceum Ogólnokształcące nr II dla Dorosłych", False),
+    ("Publiczna Szkoła Podstawowa nr 2", "Niepubliczna Szkoła Podstawowa nr 2", False),
+    (None, None, False),
+])
+def test_school_identity(left, right, expected):
+    assert same_school_name(left, right) is expected
+
+
+def test_same_school_name_does_not_merge_distant_campuses_or_different_types():
+    existing = [{"name": "II Liceum Ogólnokształcące", "category": "school", "geometry": Point(0, 0)}]
+    candidates = [
+        {"name": "Liceum Ogólnokształcące nr 2", "category": "school", "geometry": Point(30, 0)},
+        {"name": "Liceum Ogólnokształcące nr 2", "category": "school", "geometry": Point(500, 0)},
+        {"name": "Szkoła Podstawowa nr 2", "category": "school", "geometry": Point(40, 0)},
+    ]
+    accepted, counts = reconcile_places(candidates, existing)
+    assert accepted == candidates[1:]
+    assert counts["duplicate"] == 1
 
 
 def place(x, y, name, category, *, confidence=0.9, status="open"):
@@ -65,3 +94,15 @@ def test_reconcile_does_not_double_count_same_or_uncertain_place():
 
     assert [item["name"] for item in accepted] == ["Inny Market"]
     assert counts == {"duplicate": 1, "ambiguous": 2, "added": 1}
+
+
+def test_shop_locality_suffix_does_not_create_a_second_shop():
+    existing = [{"name": "Fikcyjny Market", "category": "shop", "geometry": Point(0, 0)}]
+    candidates = [
+        {"name": "Fikcyjny Market Opole-Zakrzów", "category": "shop", "geometry": Point(20, 20)},
+        {"name": "Fikcyjny Market Opole", "category": "shop", "geometry": Point(200, 0)},
+        {"name": "Inny Market", "category": "shop", "geometry": Point(20, 0)},
+    ]
+    accepted, counts = reconcile_places(candidates, existing)
+    assert [item["name"] for item in accepted] == ["Fikcyjny Market Opole", "Inny Market"]
+    assert counts["duplicate"] == 1

@@ -83,4 +83,13 @@ def element_point(element: dict) -> tuple[float, float] | None:
     if element["type"] == "node":
         return element["lon"], element["lat"]
     center = element.get("center")
-    return (center["lon"], center["lat"]) if center else None
+    if center:
+        return center["lon"], center["lat"]
+    bounds = element.get("bounds")
+    if bounds:
+        return (bounds["minlon"] + bounds["maxlon"]) / 2, (bounds["minlat"] + bounds["maxlat"]) / 2
+    geometry = element.get("geometry", [])
+    if geometry:
+        return ((min(p["lon"] for p in geometry) + max(p["lon"] for p in geometry)) / 2,
+                (min(p["lat"] for p in geometry) + max(p["lat"] for p in geometry)) / 2)
+    return None

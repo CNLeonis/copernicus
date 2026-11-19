@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
+from app.api.read import _point_assessment
 from app.database import get_connection
 from app.main import app
 from tests.api.test_read import CELL_ID, seed_synthetic
@@ -12,6 +13,28 @@ from tests.api.test_read import CELL_ID, seed_synthetic
 def request_payload(**overrides):
     return {"latitude": 50.67, "longitude": 17.92, "distance_method": "euclidean",
             "radius_m": 1000, **overrides}
+
+
+@pytest.mark.parametrize(
+    ("counts", "radius_m", "expected"),
+    [
+        ((0, 0, 0), 250, "low"),
+        ((0, 0, 4), 500, "low"),
+        ((0, 4, 0), 500, "low"),
+        ((0, 4, 4), 500, "medium"),
+        ((1, 1, 1), 250, "high"),
+        ((0, None, 1), 500, "no_data"),
+        ((0, 0, None), 500, "low"),
+    ],
+)
+def test_point_assessment_uses_radius_counts(counts, radius_m, expected):
+    features = dict(zip(
+        ("shops_within_radius", "schools_within_radius", "bus_stops_within_radius"),
+        counts,
+        strict=True,
+    ))
+    result = _point_assessment(features, radius_m)
+    assert result == {"accessibility_class": expected, "radius_m": radius_m}
 
 
 @pytest.mark.parametrize("payload", [
@@ -47,6 +70,7 @@ def test_analyze_location_computes_point_features_and_missing_sources(db, db_cli
     assert result["point_features"]["schools_within_radius"] == 1
     assert result["point_features"]["nearest_bus_stop_m"] is None
     assert result["point_features"]["bus_stops_within_radius"] is None
+    assert result["point_assessment"] == {"accessibility_class": "no_data", "radius_m": 1000}
     assert result["cell_features"]["bus_stops_500m"] == 0
     assert result["clustering"] == []
     assert result["assessment"] is None
@@ -59,15 +83,20 @@ def test_analyze_location_computes_point_features_and_missing_sources(db, db_cli
 def test_analyze_location_uses_only_published_assignments_and_keeps_noise(db, db_client):
     seed_synthetic(db)
     with db.begin() as connection:
-        for run_id, algorithm, label, published in (
-            ("SYNTHETIC-kmeans-unpublished", "kmeans", 0, False),
-            ("SYNTHETIC-hdbscan-published", "hdbscan", -1, True),
+        for run_id, algorithm, label, published, parameters in (
+            ("SYNTHETIC-kmeans-unpublished", "kmeans", 0, False, '{}'),
+            ("SYNTHETIC-kmeans-nine", "kmeans", 1, True, '{"n_clusters": 2}'),
+            ("SYNTHETIC-kmeans-six", "kmeans", 0, True,
+             '{"n_clusters": 2, "feature_set": "counts_six"}'),
+            ("SYNTHETIC-hdbscan-published", "hdbscan", -1, True, '{}'),
         ):
             connection.execute(text(
                 "INSERT INTO ml_runs (id, algorithm, parameters, cell_size_m, sample_filter, scaler_name, "
                 "random_state, n_samples, n_clusters, noise_fraction, metrics, is_published) VALUES "
-                "(:id, :algorithm, '{}'::jsonb, 250, 'all', 'standard', 1, 1, 0, 1, '{}'::jsonb, :published)"
-            ), {"id": run_id, "algorithm": algorithm, "published": published})
+                "(:id, :algorithm, CAST(:parameters AS jsonb), 250, 'all', 'standard', "
+                "1, 1, 0, 1, '{}'::jsonb, :published)"
+            ), {"id": run_id, "algorithm": algorithm,
+                "published": published, "parameters": parameters})
             connection.execute(text(
                 "INSERT INTO cluster_assignments (run_id, cell_id, cluster_label) VALUES (:run, :cell, :label)"
             ), {"run": run_id, "cell": CELL_ID, "label": label})
@@ -79,12 +108,46 @@ def test_analyze_location_uses_only_published_assignments_and_keeps_noise(db, db
     response = db_client.post("/api/analyze-location", json=request_payload())
     assert response.status_code == 200, response.text
     result = response.json()
-    assert result["clustering"] == [{
-        "run_id": "SYNTHETIC-hdbscan-published", "algorithm": "hdbscan", "cluster_label": -1, "is_noise": True,
-    }]
+    assert result["clustering"] == [
+        {"run_id": "SYNTHETIC-kmeans-six", "algorithm": "kmeans",
+         "cluster_label": 0, "is_noise": False},
+        {"run_id": "SYNTHETIC-hdbscan-published", "algorithm": "hdbscan",
+         "cluster_label": -1, "is_noise": True},
+    ]
+    assert db_client.get("/api/ml/runs/SYNTHETIC-kmeans-nine").status_code == 200
     assert result["assessment"]["accessibility_class"] == "medium"
+    assert result["point_assessment"] == {"accessibility_class": "no_data", "radius_m": 1000}
     assert "no_published_model" not in result["warnings"]
     assert "no_assessment" not in result["warnings"]
+
+
+@pytest.mark.db
+def test_point_assessment_changes_with_selected_radius(db, db_client):
+    seed_synthetic(db)
+    with db.begin() as connection:
+        connection.execute(text("DELETE FROM services"))
+        connection.execute(text(
+            "WITH p AS (SELECT ST_Transform(ST_SetSRID(ST_MakePoint(17.92, 50.67), 4326), 2180) AS geom), "
+            "items(name, category, subcategory, east, north) AS (VALUES "
+            "('SYNTHETIC sklep', 'shop', 'supermarket', 300, 0), "
+            "('SYNTHETIC szkoła', 'school', 'primary', 0, 300), "
+            "('SYNTHETIC przystanek 1', 'bus_stop', 'bus_stop', 0, 100), "
+            "('SYNTHETIC przystanek 2', 'bus_stop', 'bus_stop', 0, 110), "
+            "('SYNTHETIC przystanek 3', 'bus_stop', 'bus_stop', 0, 120), "
+            "('SYNTHETIC przystanek 4', 'bus_stop', 'bus_stop', 0, 130)) "
+            "INSERT INTO services (name, category, subcategory, geometry, inside_city) "
+            "SELECT name, category, subcategory, ST_Translate(p.geom, items.east, items.north), true "
+            "FROM items CROSS JOIN p"
+        ))
+
+    narrow = db_client.post("/api/analyze-location", json=request_payload(radius_m=250))
+    wide = db_client.post("/api/analyze-location", json=request_payload(radius_m=500))
+    assert narrow.status_code == wide.status_code == 200
+    assert narrow.json()["point_features"]["shops_within_radius"] == 0
+    assert narrow.json()["point_features"]["schools_within_radius"] == 0
+    assert narrow.json()["point_features"]["bus_stops_within_radius"] == 4
+    assert narrow.json()["point_assessment"]["accessibility_class"] == "low"
+    assert wide.json()["point_assessment"]["accessibility_class"] == "high"
 
 
 @pytest.mark.db

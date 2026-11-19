@@ -5,12 +5,15 @@ Aplikacja wskazuje obszary Opola o ograniczonej dostępności sklepów spożywcz
 ## Uruchomienie
 
 ```sh
-docker compose up --build
+docker compose --profile setup run --rm restore-db
+docker compose up -d --build backend frontend
 ```
 
-Interfejs: <http://localhost:5173>. API: <http://localhost:8000/docs>. Domyślnie interfejs pokazuje oznaczone dane demonstracyjne. Po przygotowaniu bazy ustaw `VITE_ANALYSIS_SOURCE=api` w środowisku frontendu, aby korzystać z API.
+Repozytorium zawiera gotową, poprawioną bazę wraz z wynikami modeli. Pierwsze polecenie odtwarza ją po wykonaniu kopii lokalnej bazy. [Krótka instrukcja dla frontendowca](database/README.md) opisuje uruchomienie i aktualizację. Nie trzeba wykonywać importów ani treningu opisanych poniżej, aby pracować nad frontendem.
 
-## Przygotowanie bazy
+Interfejs: <http://localhost:5173>. API: <http://localhost:8000/docs>. Prototyp korzysta z rzeczywistego API i wymaga przygotowanej bazy. Kliknięcie mapy pokazuje liczniki i ocenę GIS dla punktu w promieniu 250, 500 lub 1000 m. Niebieski okrąg oznacza wybrany zasięg, a pomarańczowy obrys komórkę 250 m z przypisaniem do klastra. Zmiana promienia przelicza liczniki i ocenę punktu; klaster nadal dotyczy komórki.
+
+## Przygotowanie bazy od źródeł (opcjonalne)
 
 ```sh
 docker compose up -d db
@@ -43,7 +46,18 @@ Domyślna analiza używa siatki 250 m i K-Means (`k=2`) na sześciu licznikach s
 
 ## Interpretacja klastrów
 
-W aktualnych danych siatki 250 m model sześciu liczników przypisał 1973 komórki do grupy z mniejszą liczbą usług oraz 561 do grupy z większą liczbą usług. Mediany liczników w promieniu 1000 m wynoszą odpowiednio 0/0/5 i 12/3/27 (sklepy/szkoły/przystanki). Dla siatki 500 m liczebności wynoszą 548 i 121, a mediany 0/0/5 i 16/3/29. Klaster opisuje podobieństwo profilu usług, a nie samodzielną ocenę niedoboru: w słabszej grupie 250 m 997 komórek ma niską, a 936 średnią dostępność według odrębnych reguł GIS. Silhouette 0,519 dla 250 m i 0,564 dla 500 m obliczono w sześciowymiarowej przestrzeni cech; nie należy go bezpośrednio zestawiać z wynikiem modelu dziewięciu cech. Wariant cech wybrano po obejrzeniu tych danych, więc wyniki na odłożonych obszarach pozostają oceną eksploracyjną.
+K-Means grupuje komórki o podobnej liczbie usług. Ocena punktu w prototypie używa wybranego promienia: jest „niska”, gdy brakuje co najmniej dwóch kategorii, „średnia”, gdy brakuje jednej, i „wysoka”, gdy wszystkie trzy są dostępne; niepełne dane mogą dać „brak danych”. Oceny zapisanych komórek w tabeli poniżej używają odrębnej, progowej reguły GIS: dla każdej kategorii jest „wysoka”, gdy w promieniu 500 m jest co najmniej jeden obiekt, „średnia”, gdy obiekt jest dopiero w promieniu 1000 m, i „niska”, gdy nie ma go także w promieniu 1000 m. Łączna ocena komórki jest „niska”, jeśli co najmniej dwie z trzech kategorii mają ocenę „niska”. Są to progi przyjęte w projekcie, a nie norma planistyczna. Odległości są euklidesowe; nie uwzględniają tras pieszych ani barier.
+
+| Siatka | Klaster | Komórki | Mediana sklepów / szkół / przystanków do 1000 m | Mediana odległości do najbliższego sklepu / szkoły / przystanku | Ocena niska / średnia / wysoka |
+|---:|---|---:|---|---|---:|
+| 250 m | 0 — mniej usług | 1968 | 0 / 0 / 5 | 1003 / 1418 / 625 m | 998 / 933 / 37 |
+| 250 m | 1 — więcej usług | 566 | 12 / 2 / 26 | 261 / 453 / 192 m | 0 / 87 / 479 |
+| 500 m | 0 — mniej usług | 546 | 0 / 0 / 5 | 999 / 1350 / 608 m | 275 / 250 / 21 |
+| 500 m | 1 — więcej usług | 123 | 15 / 3 / 27 | 194 / 448 / 177 m | 0 / 16 / 107 |
+
+W siatce 250 m wszystkie 998 komórek z niską oceną znalazło się w klastrze z mniejszą liczbą usług, ale ten klaster obejmuje też 933 komórek z oceną średnią. Klaster nie jest więc etykietą „obszar niedostatecznie wyposażony”. Tylko 230 z tych 998 komórek ma w danych przesłanki potencjalnego zamieszkania; brak takich przesłanek w pozostałych komórkach nie dowodzi, że są niezamieszkane. Bez danych o ludności nie można stwierdzić, ilu mieszkańców dotyczy ograniczona dostępność.
+
+Sześć liczników pozwoliło przypisać wszystkie 2534 analizowane komórki siatki 250 m, podczas gdy model dziewięciu cech przypisał 2063 z nich, ponieważ brakowało części odległości do najbliższych usług. Mediany odległości w tabeli liczone są tylko dla komórek z dostępną odległością. Po usunięciu potwierdzonego duplikatu Kauflandu oraz 13 zdublowanych wpisów szkół oraz 25 zdublowanych reprezentacji przystanków i przeliczeniu wyników Silhouette wynosi 0,521 dla 250 m i 0,564 dla 500 m w przestrzeni sześciu cech; tych wartości nie porównuje się bezpośrednio z wynikiem dziewięciu cech. Wariant cech wybrano po obejrzeniu tych samych danych, dlatego wyników na odłożonych obszarach nie należy przedstawiać jako niezależnego potwierdzenia przewagi modelu.
 
 ## Testy
 

@@ -1,0 +1,32 @@
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.45 system-ui, sans-serif; color: #202020; background: white; }
+.prototype { display: grid; grid-template-columns: 370px minmax(0, 1fr); min-height: 100vh; }
+.panel { padding: 16px; border-right: 1px solid #aaa; }
+h1 { font-size: 22px; margin: 0; }
+h2 { font-size: 17px; margin: 0 0 10px; }
+section { padding: 12px; border: 1px solid #aaa; margin: 16px 0; }
+p { margin: 10px 0; }
+select { display: block; width: 100%; margin-top: 6px; padding: 8px; font: inherit; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { border-bottom: 1px solid #ddd; padding: 7px 3px; text-align: left; }
+.note, small { font-size: 12px; color: #555; }
+.error { color: #9f210d; background: #fff0e8; padding: 8px; }
+.map-area { min-width: 0; display: flex; flex-direction: column; padding: 8px; }
+.map-shell { position: sticky; top: 0; height: calc(100vh - 70px); min-height: 450px; }
+.map { height: 100%; width: 100%; z-index: 0; background: #eee; }
+.map-toolbar { position: absolute; bottom: 25px; left: 10px; z-index: 500; display: flex; gap: 8px; }
+.map-legend { position: absolute; top: 12px; right: 12px; z-index: 500; background: #fffffff5; border: 1px solid #aaa; border-radius: 4px; padding: 10px 12px; font-size: 13px; box-shadow: 0 1px 5px #0002; }
+.map-legend ul { list-style: none; padding: 0; margin: 6px 0 0; }
+.map-legend li { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+.map-legend li span { display: inline-block; width: 13px; height: 13px; flex-shrink: 0; }
+.legend-dot { border-radius: 50%; border: 1px solid white; box-shadow: 0 0 0 1px #888; }
+.legend-building { opacity: 0.65; border: 1px solid #555; }
+.map-legend li .legend-stop { width: 18px; height: 12px; border: 2px solid #008060; }
+.bus-stop-symbol { background: rgb(0 128 96 / 35%); border: 2px solid #008060; box-shadow: none; }
+.legend-radius { border: 2px solid #135ab5; border-radius: 50%; background: #135ab514; }
+.legend-cell { border: 2px solid #d07800; }
+.map-legend p { max-width: 180px; color: #9f210d; }
+button { padding: 8px; background: white; border: 1px solid #555; cursor: pointer; }
+.map-error { position: absolute; top: 5px; left: 60px; z-index: 500; background: white; }
+.selected-pin span { display: block; width: 22px; height: 22px; background: #135ab5; border: 3px solid white; border-radius: 50%; }
+@media (max-width: 760px) { .prototype { display: flex; flex-direction: column-reverse; } .map-shell { height: 55vh; min-height: 320px; } .panel { border: 0; } }
