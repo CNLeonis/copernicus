@@ -17,6 +17,9 @@ dist/
 coverage/
 .npm-cache/
 
+# Local database backups made before restoring the shared snapshot
+/database/backups/
+
 # Editors and OS
 .idea/
 .vscode/

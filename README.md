@@ -5,12 +5,15 @@ Aplikacja wskazuje obszary Opola o ograniczonej dostępności sklepów spożywcz
 ## Uruchomienie
 
 ```sh
-docker compose up --build
+docker compose --profile setup run --rm restore-db
+docker compose up -d --build backend frontend
 ```
+
+Repozytorium zawiera gotową, poprawioną bazę wraz z wynikami modeli. Pierwsze polecenie odtwarza ją po wykonaniu kopii lokalnej bazy. [Krótka instrukcja dla frontendowca](database/README.md) opisuje uruchomienie i aktualizację. Nie trzeba wykonywać importów ani treningu opisanych poniżej, aby pracować nad frontendem.
 
 Interfejs: <http://localhost:5173>. API: <http://localhost:8000/docs>. Prototyp korzysta z rzeczywistego API i wymaga przygotowanej bazy. Kliknięcie mapy pokazuje liczniki i ocenę GIS dla punktu w promieniu 250, 500 lub 1000 m. Niebieski okrąg oznacza wybrany zasięg, a pomarańczowy obrys komórkę 250 m z przypisaniem do klastra. Zmiana promienia przelicza liczniki i ocenę punktu; klaster nadal dotyczy komórki.
 
-## Przygotowanie bazy
+## Przygotowanie bazy od źródeł (opcjonalne)
 
 ```sh
 docker compose up -d db

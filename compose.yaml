@@ -34,6 +34,22 @@ services:
       start_period: 10s
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
 
+  restore-db:
+    image: postgis/postgis:17-3.5
+    profiles: [setup]
+    environment:
+      PGHOST: db
+      PGDATABASE: ${POSTGRES_DB:-copernicus}
+      PGUSER: ${POSTGRES_USER:-copernicus}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-copernicus}
+    volumes:
+      - ./database:/snapshot:ro
+      - ./database/backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: [sh, /snapshot/restore.sh]
+
   frontend:
     build: ./frontend
     ports:
